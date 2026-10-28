@@ -77,8 +77,6 @@ Value = GrpMainPage/MapInfo/BtnClock | GrpMainPage/NetworkLatency
 
 源码版本由 `src/Version.h` 定义，DLL 文件版本和产品版本使用该定义。打包会核对 DLL 产品版本与根目录配置的 `General.Version`，验证 ZIP 中两个文件的 SHA-256，并拒绝覆盖已有同名发布包。正式 ZIP 顶层仅包含 DLL 和配置。
 
-测试目录、辅助检查脚本、构建输出及发布产物已加入 Git 忽略，保留在本地供维护检查使用。
-
 ## GitHub Actions
 
 默认分支推送及 PR 会执行 Release x64 构建、UPX 压缩与成品校验，使用 `src/Version.h` 的基础版本。其他分支推送不构建，不通过 tag 推送发布。流程使用带 VS 2026 的 `windows-2025-vs2026` runner，经 `vswhere` 查找 VS 18.x MSBuild，明确使用 v145。
@@ -94,12 +92,6 @@ CI 从[官方 UPX 5.0.2 Release](https://github.com/upx/upx/releases/tag/v5.0.2)
 发布在全部构建校验通过后单独执行：已有同版本公开 Release 则跳过；存在同版本草稿则停止；已有 tag 指向其他提交则停止。新发布先创建草稿，将 tag 固定到本次构建提交，仅上传 ZIP，核对附件状态、名称、大小和下载回读 SHA256 后公开。失败保留草稿供人工检查，后续运行不会接管该草稿、覆盖附件或移动 tag。
 
 构建权限为 `contents: read`，发布作业仅在默认分支手动触发时获取 `contents: write`，使用仓库自带的 `GITHUB_TOKEN`，无需 PAT。发布作业按仓库串行执行，不取消正在执行的发布。ZIP、`.sha256` 和 `compression-report.json` 作为 Actions artifacts 保留 14 天；Release 只附带 ZIP。所用官方 Actions 固定到提交 SHA。
-
-## 验证与支持范围
-
-Release/x64 构建已通过，发布包中的 DLL 与配置按 SHA-256 核对。本地保留的离线回归覆盖显隐预设的输入状态、恢复、自定义路径、聊天分离、动态节点、中心缩放、四边边距和自动右对齐。
-
-离线输入检查验证节点启用状态与组件属性，不代表真实键盘/鼠标回调已经完成实机验收。不同分辨率、手柄/触屏布局、动画、传送和与其他插件并用仍需游戏内验证。仅对匹配版本头和函数入口的国服 7.1 映像启用，其他版本停止初始化。
 
 ## 许可证
 
