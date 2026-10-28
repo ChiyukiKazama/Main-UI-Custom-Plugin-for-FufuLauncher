@@ -89,7 +89,7 @@ CI 从[官方 UPX 5.0.2 Release](https://github.com/upx/upx/releases/tag/v5.0.2)
 
 加载检查使用独立的非游戏 x64 PowerShell 子进程。`policy.json` 的源码审查指纹固定已审查的游戏宿主保护、全局初始化及构建输入；指纹变化时会停止加载检查。以后修改这些输入时，须先审查 `PluginWorker` 的非游戏提前返回及全局初始化安全性，再人工更新 `safeLoadSourcesSHA256`。版本资源与 CI 脚本不参与该运行时代码指纹。
 
-发布在全部构建校验通过后单独执行：已有同版本公开 Release 则跳过；存在同版本草稿则停止；已有 tag 指向其他提交则停止。新发布先创建草稿，将 tag 固定到本次构建提交，仅上传 ZIP，核对附件状态、名称、大小和下载回读 SHA256 后公开。失败保留草稿供人工检查，后续运行不会接管该草稿、覆盖附件或移动 tag。
+发布在全部构建校验通过后单独执行：已有同版本公开 Release 则跳过；存在同版本草稿则停止。没有同版本 Release 时，允许复用删除 Release 后遗留的 tag，将其更新为本次构建提交。新发布先创建草稿，再核对发布状态并创建或更新 tag，仅上传 ZIP，核对附件状态、名称、大小和下载回读 SHA256 后公开。失败保留草稿供人工检查，后续运行不会接管该草稿或覆盖附件；并发变化会停止发布。
 
 构建权限为 `contents: read`，发布作业仅在默认分支手动触发时获取 `contents: write`，使用仓库自带的 `GITHUB_TOKEN`，无需 PAT。发布作业按仓库串行执行，不取消正在执行的发布。ZIP、`.sha256` 和 `compression-report.json` 作为 Actions artifacts 保留 14 天；Release 只附带 ZIP。所用官方 Actions 固定到提交 SHA。
 

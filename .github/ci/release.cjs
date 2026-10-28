@@ -41,22 +41,25 @@ async function resolveTag(api, tag) {
   throw Error('Annotated tag chain is too deep.');
 }
 
+async function findReleases(api, tag) {
+  const matches = [];
+  for (let page = 1; ; page++) {
+    const releases = await api('GET', `/releases?per_page=100&page=${page}`);
+    matches.push(...releases.filter(release => release.tag_name === tag));
+    if (releases.length < 100) return matches;
+  }
+}
+
 async function publishRelease({ api, version, commit, zip, zipHash, ref }) {
   assertVersion(version);
   if (commit.length !== 40 || !/^[0-9a-f]{40}$/.test(commit) || hash(zip) !== zipHash) throw Error('Commit or ZIP checksum mismatch.');
   const repository = await api('GET', '');
   if (ref !== `refs/heads/${repository.default_branch}`) throw Error('Release is restricted to the default branch.');
   const tag = `v${version}`;
-  const matches = [];
-  for (let page = 1; ; page++) {
-    const releases = await api('GET', `/releases?per_page=100&page=${page}`);
-    matches.push(...releases.filter(release => release.tag_name === tag));
-    if (releases.length < 100) break;
-  }
+  const matches = await findReleases(api, tag);
   if (matches.some(release => release.draft)) throw Error('An unfinished draft exists. Inspect it manually before retrying.');
   if (matches.length) { console.log(`${tag} is already published; skipping.`); return { skipped: true }; }
   const existingCommit = await resolveTag(api, tag);
-  if (existingCommit && existingCommit !== commit) throw Error('Existing tag points to another commit; refusing to move it.');
 
   const filename = `MainUICustomizer-${version}.zip`;
   // Any subsequent failure deliberately leaves this draft for manual inspection.
@@ -64,8 +67,16 @@ async function publishRelease({ api, version, commit, zip, zipHash, ref }) {
     name: `MainUICustomizer ${version}`, draft: true, prerelease: false,
     body: `Commit: ${commit}\n\nSHA256 (${filename}): ${zipHash}` });
   if (!draft.draft || draft.tag_name !== tag || (draft.assets || []).length) throw Error('Unexpected newly created release state.');
+  const currentReleases = await findReleases(api, tag);
+  if (currentReleases.some(release => release.id !== draft.id)) throw Error('Another release appeared while creating the draft; tag retained.');
   const draftTagCommit = await resolveTag(api, tag);
-  if (draftTagCommit && draftTagCommit !== commit) throw Error('Tag changed while creating the draft.');
+  if (draftTagCommit && draftTagCommit !== commit) {
+    if (draftTagCommit !== existingCommit) throw Error('Tag changed concurrently while creating the draft.');
+    // An orphan tag left by a deleted release can be reused for a manual retry.
+    // Published releases and pre-existing drafts were rejected before this point.
+    await api('PATCH', `/git/refs/tags/${encodeURIComponent(tag)}`, { sha: commit, force: true });
+    console.log(`Updated unpublished ${tag}: ${draftTagCommit} -> ${commit}`);
+  }
   if (!draftTagCommit) await api('POST', '/git/refs', { ref: `refs/tags/${tag}`, sha: commit });
   if (await resolveTag(api, tag) !== commit) throw Error('Tag target changed before upload.');
   const upload = new URL(draft.upload_url.split('{')[0]);
