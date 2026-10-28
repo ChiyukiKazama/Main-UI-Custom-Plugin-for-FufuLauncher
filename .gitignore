@@ -1,0 +1,17 @@
+/bin/
+/obj/
+/dist/
+/tests/
+/scripts/
+/test.ps1
+/.vs/
+/.idea/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.ipch
+*.ilk
+*.pdb
+*.log
+ui-tree.txt
