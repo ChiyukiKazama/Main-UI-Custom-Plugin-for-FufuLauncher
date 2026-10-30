@@ -22,6 +22,9 @@ inline constexpr Method FromId{0x1439120, "48 83 EC 28 8B D1 48 8B 0D 5B B0 28 0
 inline constexpr Method ActiveSelf{0x1452F20, "40 53 48 83 EC 20 48 8B D9 48 85 C9 74 17 E8 8D 7E FF FF 48 85 C0 74 0D 0F B6 80 F6 01 00 00 48"};
 inline constexpr Method SetActive{0x1452EE0, "48 89 5C 24 08 57 48 83 EC 20 0F B6 FA 48 8B D9 48 85 C9 74 22 E8 C6 7E FF FF 48 85 C0 74 18 40"};
 inline constexpr Method Parent{0x14374B0, "40 53 48 83 EC 20 48 8B D9 48 85 C9 74 24 E8 FD 38 01 00 48 85 C0 74 1A 48 8B 90 A0 00 00 00 48"};
+inline constexpr Method SetParent{0x1437620, "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F2 48 8B D9 45 84 C0 74 16 48 85 C9 74 68 E8"};
+// MonoUIEffectAlphaController.AddRendererToUIEffectAlphaController(GameObject).
+inline constexpr Method RegisterEffectRenderers{0x13C1A8F0, "41 56 56 57 53 48 83 EC 38 48 85 C9 0F 84 A9 00 00 00 48 83 79 10 00 0F 84 9E 00 00 00 48 8B 15"};
 inline constexpr Method ChildCount{0x1437D10, "40 53 48 83 EC 20 48 8B D9 48 85 C9 74 16 E8 9D 30 01 00 48 85 C0 74 0C 8B 80 90 00 00 00 48 83"};
 inline constexpr Method Child{0x1438070, "48 89 5C 24 10 57 48 83 EC 20 48 63 FA 48 8B D9 48 85 C9 74 39 E8 36 2D 01 00 48 85 C0 74 2F 85"};
 inline constexpr Method FindTransform{0x1437EB0, "48 89 5C 24 18 57 48 83 EC 50 48 8B D9 48 89 54 24 60 48 8D 54 24 20 48 8D 4C 24 60 E8 7F 9F 08"};
