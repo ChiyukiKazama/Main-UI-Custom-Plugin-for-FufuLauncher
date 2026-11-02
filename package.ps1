@@ -1,4 +1,4 @@
-param()
+param([string]$OutputDirectory='')
 $ErrorActionPreference='Stop'
 $pluginRoot=(Resolve-Path -LiteralPath $PSScriptRoot).Path
 $dll=Join-Path $pluginRoot 'bin\x64\Release\MainUICustomizer.dll'
@@ -12,7 +12,7 @@ $configVersion=[regex]::Match($general.Groups['body'].Value,'(?m)^Version[ \t]*=
 if ($configVersion -cne $version) { throw "Configuration version '$configVersion' differs from DLL version '$version'. Update it explicitly before packaging." }
 $sourceHashes=@{}
 foreach ($source in @($dll,$config)) { $sourceHashes[[IO.Path]::GetFileName($source)]=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash }
-$dist=Join-Path $pluginRoot 'dist'
+$dist=if($OutputDirectory){[IO.Path]::GetFullPath($OutputDirectory)}else{Join-Path $pluginRoot 'dist'}
 if (-not (Test-Path -LiteralPath $dist)) { New-Item -ItemType Directory -Path $dist | Out-Null }
 $zip=Join-Path $dist "MainUICustomizer-$version.zip"
 $stagingZip=Join-Path $dist "MainUICustomizer-$version.building.zip"

@@ -133,6 +133,7 @@ namespace UI
         // Empty/metadata-only snapshots may be partial file replacements.
         if (!hasKnownSetting) { error = "Configuration contains no recognized settings; retaining the previous snapshot."; return false; }
         if (next.restoreHotkey && next.restoreHotkey == next.exportHotkey) { error = "ToggleKey and DumpKey must differ."; return false; }
+        std::sort(next.hiddenPaths.begin(), next.hiddenPaths.end());
         result = std::move(next);
         error.clear();
         return true;

@@ -1,8 +1,8 @@
 #pragma once
 #include "Settings.h"
 #include <memory>
-namespace Engine
+namespace HUD
 {
-    bool Initialize();
-    void PublishSettings(std::shared_ptr<const UI::Settings> settings);
+    void Run();
+    void Publish(std::shared_ptr<const UI::Settings> settings);
 }
