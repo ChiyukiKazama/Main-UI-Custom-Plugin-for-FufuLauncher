@@ -1,4 +1,4 @@
-// HUD changes are applied on page/configuration events, using per-page caches.
+// HUD drawing and complete-region layouts use separate per-page caches.
 #include "Engine.h"
 #include "ElementPolicy.h"
 #include "LayoutMath.h"
@@ -45,6 +45,7 @@ namespace HUD
             ColorGet color=nullptr;FloatSet setAlpha=nullptr;
             V3Get scale=nullptr,local=nullptr;V3Set setScale=nullptr,setLocal=nullptr;
             V2Get position=nullptr;V2Set setPosition=nullptr;RectGet rect=nullptr;RotationGet rotation=nullptr;
+            AwakeFn maskDirty=nullptr,maskRebuild=nullptr,rectClip=nullptr;
         } api;
         std::shared_ptr<const UI::Settings> pending=std::make_shared<UI::Settings>(),settings;
         std::string acceptedConfig;
@@ -57,18 +58,20 @@ namespace HUD
         bool restored=false;
         thread_local bool applying=false;
         int rootId=0,rootTransformId=0,pageId=0;
+        std::vector<int> layoutIds;
+        std::unordered_map<std::string,int> layoutPaths;
         uint32_t effectiveMask=0;
         std::vector<Region> regions;
         struct Record
         {
-            int id=0,object=0,transform=0,graphic=0,anchor=0,anchorTransform=0;
+            int id=0,object=0,transform=0,graphic=0,anchor=0,anchorTransform=0,smoothMask=0,rectMask=0;
             std::string path,kind;Match match;
             std::vector<std::pair<int,int>> chain;
-            bool particle=false,rect=false,rectKnown=false,layoutTarget=false;
+            bool particle=false,rect=false,rectKnown=false,layoutTarget=false,layoutOnly=false,layoutRoot=false,marginRoot=false,scaleRoot=false,applyScale=false;
             bool alphaChanged=false,rendererChanged=false;
             float alpha=1;bool enabled=true;
-            Layout layout;V3 local{};V2 currentPosition{};
-            void* token=nullptr;void* graphicToken=nullptr;
+            Layout layout;V3 local{};V2 currentPosition{},canvasShift{};float factor=1;
+            void* token=nullptr;void* graphicToken=nullptr;void* smoothMaskToken=nullptr;void* rectMaskToken=nullptr;
         };
         std::unordered_map<int,Record> records;
         std::unordered_map<int,void*> resolved;
@@ -83,8 +86,7 @@ namespace HUD
             std::string path;
             Match match;
             std::vector<std::pair<int,int>> chain;
-            bool forbidden=false,inputChecked=false,input=false;
-            void* objectToken=nullptr;
+            bool forbidden=false;
         };
         struct UnitBinding {int transform=0,button=0;bool rect=false;void* token=nullptr;void* buttonToken=nullptr;};
         std::unordered_map<int,Node> nodes;
@@ -92,6 +94,7 @@ namespace HUD
         std::vector<bool> boundFields;
         std::unordered_map<std::string,UnitBinding> unitBindings;
         std::unordered_set<int> visibilityDirty,layoutDirty,added;
+        std::unordered_set<int> changedLayouts;
         void* rootToken=nullptr;
         void* pageToken=nullptr;
         template<class Fn> bool Guard(Fn&& fn)
@@ -145,8 +148,6 @@ namespace HUD
             }
             return true;
         }
-        bool HasInput(void* object)
-        {for(const char* type:{"Selectable","EventTrigger","ScrollRect","MonoActionBtn","MonoBaseSkillBtn","MonoMiniMap","MonoTeamButtonContainer"})if(Component(object,type))return true;return false;}
         bool EffectOwner(void* transform,void* anchor)
         {
             for(unsigned depth=0;transform && depth<24;++depth)
@@ -162,6 +163,31 @@ namespace HUD
                 if(Within(selected,UI::MainPagePath) && Within(record.path,selected.substr(std::char_traits<char>::length(UI::MainPagePath)+1)))return record.match.presets!=0;
             }
             return false;
+        }
+        void RefreshMasks()
+        {
+            if(changedLayouts.empty())return;
+            std::unordered_set<int> refreshed;
+            for(const auto& pair:records)
+            {
+                const auto& r=pair.second;if(!r.smoothMask && !r.rectMask)continue;
+                const bool changed=changedLayouts.count(r.transform) || std::any_of(r.chain.begin(),r.chain.end(),
+                    [](const auto& edge){return changedLayouts.count(edge.second)!=0;});
+                if(!changed)continue;
+                for(bool rectangular:{false,true})
+                {
+                    const int id=rectangular?r.rectMask:r.smoothMask;
+                    if(!id || !refreshed.insert(id).second)continue;
+                    Guard([&]{
+                        auto* mask=Resolve(id);auto* object=Resolve(r.object);
+                        if(!mask || mask!=(rectangular?r.rectMaskToken:r.smoothMaskToken) || !object || api.owner(mask,nullptr)!=object ||
+                            api.transform(object,nullptr)!=Resolve(r.transform) || !Active(r.transform))return;
+                        if(rectangular)api.rectClip(mask,nullptr);
+                        else {api.maskDirty(mask,nullptr);api.maskRebuild(mask,nullptr);}
+                    });
+                }
+            }
+            changedLayouts.clear();
         }
         void Restore(Record& record)
         {
@@ -186,10 +212,11 @@ namespace HUD
                 if(Near(position.y,record.layout.appliedPosition.y))position.y=record.layout.position.y;
                 if(record.rect)api.setPosition(transform,&position,nullptr);
                 else {local.x=position.x;local.y=position.y;api.setLocal(transform,&local,nullptr);}
+                changedLayouts.insert(record.transform);
                 record.layout={};
             }
         }
-        void RestoreAll(){for(auto& pair:records)Guard([&]{Restore(pair.second);});}
+        void RestoreAll(){for(auto& pair:records)Guard([&]{Restore(pair.second);});RefreshMasks();}
         void RestoreLayout(Record& record)
         {auto layoutOnly=record;layoutOnly.alphaChanged=layoutOnly.rendererChanged=false;Restore(layoutOnly);record.layout=layoutOnly.layout;}
         bool Demand()
@@ -213,13 +240,17 @@ namespace HUD
         }
         bool LayoutNeeded(const Match& match)
         {
-            return settings->scale!=1 || (settings->alignRightButtons && match.topRight) ||
-                (settings->marginLeft && (match.edges&Left)) || (settings->marginRight && (match.edges&Right)) ||
-                (settings->marginTop && (match.edges&Top)) || (settings->marginBottom && (match.edges&Bottom));
+            return settings->scale!=1 || (settings->alignRightButtons && match.topRight);
         }
+        bool MarginNeeded(unsigned edges)
+        {return (settings->marginLeft && (edges&Left)) || (settings->marginRight && (edges&Right)) ||
+            (settings->marginTop && (edges&Top)) || (settings->marginBottom && (edges&Bottom));}
+        bool LayoutNeeded(const Record& record)
+        {return record.layoutRoot && ((record.marginRoot && MarginNeeded(record.match.edges)) ||
+            (record.scaleRoot && settings->scale!=1) || (record.match.topRight && settings->alignRightButtons));}
         void ResetCache()
         {
-            RestoreAll();records.clear();nodes.clear();covered.clear();attempted.clear();unitBindings.clear();
+            RestoreAll();layoutIds.clear();layoutPaths.clear();records.clear();nodes.clear();covered.clear();attempted.clear();unitBindings.clear();
             regions.clear();boundFields.clear();visibilityDirty.clear();layoutDirty.clear();added.clear();ClearFrame();
         }
         bool DiscoverRoot(int captured,bool& replaced)
@@ -261,7 +292,7 @@ namespace HUD
                 for(auto& pair:nodes)pair.second.match=Classify(pair.second.path,regions);
                 for(auto& pair:records)
                 {
-                    auto& r=pair.second;auto match=Classify(r.path,regions);
+                    auto& r=pair.second;if(r.layoutRoot)continue;auto match=Classify(r.path,regions);
                     if(match.presets!=r.match.presets || match.edges!=r.match.edges || match.unit!=r.match.unit)added.insert(r.id);
                     r.match=std::move(match);
                 }
@@ -280,7 +311,7 @@ namespace HUD
                 auto item=std::move(work.back());work.pop_back();const int transformId=Id(item.transform);
                 if(!transformId || !visited.insert(transformId).second || Covered(item.path))continue;
                 auto* object=api.owner(item.transform,nullptr);if(!object)continue;
-                Node node;node.transform=transformId;node.object=Id(object);node.objectToken=object;node.path=item.path;node.forbidden=Forbidden(item.path);
+                Node node;node.transform=transformId;node.object=Id(object);node.path=item.path;node.forbidden=Forbidden(item.path);
                 node.match=Classify(item.path,regions);
                 int current=transformId;
                 for(unsigned depth=0;current && current!=rootTransformId && depth<48;++depth)
@@ -289,12 +320,18 @@ namespace HUD
                 nodes[transformId]=std::move(node);const auto& cached=nodes.at(transformId);
                 if(cached.forbidden || !cached.match.presets)continue;
                 auto* graphic=Component(object,"Graphic");auto* canvas=graphic?Component(object,"CanvasRenderer"):nullptr;
+                auto* smoothMask=Component(object,"SmoothMask");
+                auto* rectMask=Component(object,"RectMask2D");
                 bool expected=false;if(graphic)for(const char* type:{"Image","RawImage","Text","SimpleText"})if(Component(object,type)){expected=true;break;}
                 void* component=expected?canvas:nullptr;const char* kind="CanvasRenderer";bool particle=false;
                 // Skill graphics and typed UI effects share the same hide state.
                 if(!component && cached.match.particle)
                     for(const char* type:{"ParticleSystemRenderer","MeshRenderer"})if(auto* renderer=Component(object,type))
                     {if(EffectOwner(item.transform,anchorTransform)){component=renderer;kind=type;particle=true;}break;}
+                // Non-drawing masks are cached for parameter refresh only.
+                const bool layoutOnly=!component;
+                if(!component && smoothMask){component=smoothMask;kind="SmoothMask";}
+                if(!component && rectMask){component=rectMask;kind="RectMask2D";}
                 if(component)
                 {
                     const int id=Id(component);auto old=records.find(id);
@@ -303,9 +340,22 @@ namespace HUD
                         if(old!=records.end())Restore(old->second);
                         Record r;r.id=id;r.object=cached.object;r.transform=transformId;r.graphic=Id(graphic);r.graphicToken=graphic;
                         r.anchor=rootId;r.anchorTransform=rootTransformId;r.path=item.path;r.kind=kind;r.match=cached.match;
-                        r.particle=particle;r.token=component;r.chain=cached.chain;
+                        r.particle=particle;r.token=component;r.chain=cached.chain;r.layoutOnly=layoutOnly;
+                        r.smoothMask=Id(smoothMask);r.smoothMaskToken=smoothMask;
+                        r.rectMask=Id(rectMask);r.rectMaskToken=rectMask;
                         records[id]=std::move(r);added.insert(id);
                     }
+                }
+                // Keep each complete row together. The enclosing container is
+                // animated independently, so it must retain its native position.
+                const std::string teamContent="GrpMainPage/TeamBtnContainer/Content";
+                if(Within(item.path,teamContent) && item.path.size()>teamContent.size() &&
+                    item.path.find('/',teamContent.size()+1)==std::string::npos && !records.count(transformId) && Component(object,"RectTransform"))
+                {
+                    Record r;r.id=transformId;r.object=cached.object;r.transform=transformId;r.token=item.transform;
+                    r.anchor=rootId;r.anchorTransform=rootTransformId;r.path=item.path;r.kind="HUDLayout";
+                    r.match=cached.match;r.match.unit=item.path;r.chain=cached.chain;r.layoutOnly=r.layoutRoot=r.marginRoot=r.rect=r.rectKnown=true;
+                    records.emplace(transformId,std::move(r));added.insert(transformId);layoutIds.push_back(transformId);layoutPaths.emplace(item.path,transformId);
                 }
                 const int count=api.count(item.transform,nullptr);if(item.depth>=32 || count<0 || count>1024)continue;
                 for(int i=0;i<count;++i){auto* child=api.child(item.transform,i,nullptr);if(child)work.push_back({child,item.path+"/"+Name(child),item.depth+1});}
@@ -323,28 +373,67 @@ namespace HUD
                 if(!nested)DiscoverRegion(region);
             }
         }
+        std::string MarginPath(const Region& region)
+        {
+            for(const char* path:{"GrpMainPage/MapInfo","GrpMainPage/ActionPanelContainer",
+                "GrpMainPage/ChatArea/Chat/Content","GrpMainPage/GrpMainBtn/GrpMainToggle/GrpTopPanel","GrpMainPage/GameInfo/Layout"})
+                if(Within(region.path,path))return path;
+            return region.path;
+        }
+        Record* CacheLayoutRoot(const std::string& path,const Match& match,bool margin,bool scale)
+        {
+            if(Forbidden(path) || path=="GrpMainPage")return nullptr;
+            if(const auto cached=layoutPaths.find(path);cached!=layoutPaths.end())
+            {
+                auto& r=records.at(cached->second);r.match.presets|=match.presets;r.match.edges|=match.edges;
+                r.match.topRight=r.match.topRight || match.topRight;r.marginRoot=r.marginRoot || margin;r.scaleRoot=r.scaleRoot || scale;return &r;
+            }
+            auto* transform=Relative(Resolve(rootTransformId),path);if(!transform)return nullptr;
+            const int id=Id(transform);if(records.count(id))return nullptr;
+            auto* object=api.owner(transform,nullptr);if(!object || !Component(object,"RectTransform"))return nullptr;
+            Record r;r.id=id;r.object=Id(object);r.transform=id;r.token=transform;r.path=path;r.kind="HUDLayout";
+            r.anchor=rootId;r.anchorTransform=rootTransformId;r.layoutOnly=r.layoutRoot=r.rect=r.rectKnown=true;
+            r.marginRoot=margin;r.scaleRoot=scale;r.match=match;r.match.unit=path;
+            int current=id;
+            for(unsigned depth=0;current && current!=rootTransformId && depth<48;++depth)
+            {const int parent=Parent(current);r.chain.push_back({current,parent});current=parent;}
+            if(current!=rootTransformId)return nullptr;
+            r.smoothMaskToken=Component(object,"SmoothMask");r.smoothMask=Id(r.smoothMaskToken);
+            r.rectMaskToken=Component(object,"RectMask2D");r.rectMask=Id(r.rectMaskToken);
+            auto inserted=records.emplace(id,std::move(r));added.insert(id);layoutIds.push_back(id);layoutPaths.emplace(path,id);return &inserted.first->second;
+        }
+        void EnsureLayoutRoots()
+        {
+            for(int id:layoutIds){auto& r=records.at(id);r.scaleRoot=false;r.match.topRight=false;}
+            for(const auto& region:regions)
+            {
+                if(region.preset==UI::Team || !MarginNeeded(region.edges))continue;
+                Match match;match.presets=uint32_t{1}<<region.preset;match.edges=region.edges;
+                CacheLayoutRoot(MarginPath(region),match,true,false);
+            }
+            if(settings->scale==1 && !settings->alignRightButtons)return;
+            std::unordered_map<std::string,Match> requests;
+            for(const auto& pair:records)
+            {
+                const auto& r=pair.second;if(r.layoutOnly || !LayoutNeeded(r.match) || r.match.unit.empty())continue;
+                const auto unit=Within(r.match.unit,"GrpMainPage/ChatArea/Chat/Content")?std::string("GrpMainPage/ChatArea/Chat/Content"):r.match.unit;
+                auto& match=requests[unit];match.presets|=r.match.presets;match.edges|=r.match.edges;match.topRight=match.topRight || r.match.topRight;
+            }
+            // Units containing other independent units are grouping containers.
+            // Their children own scaling so no subtree receives the factor twice.
+            for(const auto& request:requests)
+            {
+                const bool leaf=std::none_of(requests.begin(),requests.end(),[&](const auto& other){return other.first!=request.first && Within(other.first,request.first);});
+                if(leaf || (request.second.topRight && settings->alignRightButtons))CacheLayoutRoot(request.first,request.second,false,leaf);
+            }
+        }
         void SelectLayoutTargets()
         {
-            // Input metadata is reviewed once, and only for a region whose layout
-            // is actually requested. Right alignment never reviews the skill/map trees.
-            std::unordered_set<int> blocked,candidates;
-            for(auto& pair:nodes)
-            {
-                auto& n=pair.second;
-                if(!n.inputChecked && !n.forbidden && LayoutNeeded(n.match))
-                {auto* object=Resolve(n.object);n.input=!object || object!=n.objectToken || HasInput(object);n.inputChecked=true;}
-                if(n.forbidden || n.input)
-                {blocked.insert(n.transform);for(const auto& edge:n.chain)blocked.insert(edge.second);}
-            }
             for(auto& pair:records)
             {
-                auto& r=pair.second;
-                if(LayoutNeeded(r.match) && !blocked.count(r.transform))candidates.insert(r.transform);
-            }
-            for(auto& pair:records)
-            {
-                auto& r=pair.second;bool target=candidates.count(r.transform)!=0;
-                if(target)for(const auto& edge:r.chain)if(candidates.count(edge.second)){target=false;break;}
+                auto& r=pair.second;const bool scale=r.layoutRoot && r.scaleRoot && settings->scale!=1;
+                if(r.applyScale!=scale){r.applyScale=scale;layoutDirty.insert(r.id);}
+                const bool target=LayoutNeeded(r);
                 if(target!=r.layoutTarget)layoutDirty.insert(r.id);
                 if(target && !r.rectKnown && Identity(r))
                 {r.rect=Component(Resolve(r.object),"RectTransform")!=nullptr;r.rectKnown=true;}
@@ -357,7 +446,7 @@ namespace HUD
             for(auto& pair:records)
             {
                 auto& r=pair.second;if(!layoutDirty.count(r.id) || !r.layoutTarget || !Identity(r))continue;auto* transform=Resolve(r.transform);
-                if(!Active(r.transform)){RestoreLayout(r);continue;}
+                if(!r.layoutRoot && !Active(r.transform)){RestoreLayout(r);continue;}
                 V3 scale{},local{};V2 position{};api.scale(transform,&scale,nullptr);api.local(transform,&local,nullptr);
                 if(r.rect)api.position(transform,&position,nullptr);else position={local.x,local.y};
                 Observe(r.layout,scale,position);r.currentPosition=position;r.local=local;layoutByTransform[r.transform]=&r;
@@ -394,12 +483,11 @@ namespace HUD
                 const auto& binding=it->second;auto* t=Resolve(binding.transform);
                 if(!t || t!=binding.token || Path(t,Resolve(rootTransformId))!=r.match.unit)continue;
                 unit.transform=binding.transform;
-                if(binding.rect){Rect rect{};api.rect(t,&rect,nullptr);unit.center=Point(MatrixOf(unit.transform),{rect.x+rect.width*.5f,rect.y+rect.height*.5f});}
-                else unit.center=Point(MatrixOf(unit.transform),{});
+                unit.center=Point(MatrixOf(unit.transform),{});
                 unit.active=Active(unit.transform) && (!binding.button || (Resolve(binding.button)==binding.buttonToken && Active(binding.button)));
             }
             for(const auto& pair:records)
-            {const auto& r=pair.second;auto it=result.find(r.match.unit);if(it!=result.end() && !it->second.visible && !HiddenNow(r))it->second.visible=Active(r.transform);}
+            {const auto& r=pair.second;auto it=result.find(r.match.unit);if(!r.layoutOnly && it!=result.end() && !it->second.visible && !HiddenNow(r))it->second.visible=Active(r.transform);}
             if(settings->alignRightButtons)
             {
                 std::vector<Unit*> slots;for(auto& pair:result)if(pair.second.topRight && pair.second.active)slots.push_back(&pair.second);
@@ -418,25 +506,30 @@ namespace HUD
             for(auto& pair:records)
             {
                 auto& r=pair.second;if(!layoutDirty.count(r.id) || !r.layoutTarget || !Identity(r))continue;auto* transform=Resolve(r.transform);
-                if(!Active(r.transform))continue;
+                if(!r.layoutRoot && !Active(r.transform))continue;
                 const int parent=Parent(r.transform);const auto parentMatrix=MatrixOf(parent);if(invalidMatrices.count(parent))continue;
                 const auto unit=units.find(r.match.unit);if(unit==units.end() || !unit->second.transform)continue;
-                Rotation rotation{};api.rotation(transform,&rotation,nullptr);Rect rect{};if(r.rect)api.rect(transform,&rect,nullptr);
-                V2 local{r.local.x+r.layout.position.x-r.currentPosition.x,r.local.y+r.layout.position.y-r.currentPosition.y};
                 V2 shift{unit->second.alignment,0};
-                if(horizontal){if(r.match.edges&Left)shift.x+=settings->marginLeft;if(r.match.edges&Right)shift.x-=settings->marginRight;}
-                if(vertical){if(r.match.edges&Top)shift.y-=settings->marginTop;if(r.match.edges&Bottom)shift.y+=settings->marginBottom;}
-                V3 desiredScale{};V2 delta{};
-                if(!Geometry(parentMatrix,local,r.layout.scale,rotation,rect,unit->second.center,shift,settings->scale,desiredScale,delta))continue;
+                if(horizontal && r.marginRoot)
+                {
+                    if(r.match.edges&Left)shift.x+=settings->marginLeft;
+                    if(r.match.edges&Right)shift.x-=settings->marginRight;
+                }
+                if(vertical && r.marginRoot){if(r.match.edges&Top)shift.y-=settings->marginTop;if(r.match.edges&Bottom)shift.y+=settings->marginBottom;}
+                r.canvasShift=shift;r.factor=r.applyScale?settings->scale:1.f;
+                const V3 desiredScale{r.layout.scale.x*r.factor,r.layout.scale.y*r.factor,r.layout.scale.z};V2 delta{};
+                // Scale at the native pivot. Large layout rectangles and empty
+                // placeholder slots must not introduce a centering translation.
+                if(!InverseVector(parentMatrix,shift,delta))continue;
                 const auto desiredPosition=Add(r.layout.position,delta);
                 if(!Identity(r,true))continue;
                 V3 currentScale{};api.scale(transform,&currentScale,nullptr);
-                if(!Same(currentScale,desiredScale)){api.setScale(transform,&desiredScale,nullptr);r.layout.changed=true;}
+                if(!Same(currentScale,desiredScale)){api.setScale(transform,&desiredScale,nullptr);r.layout.changed=true;changedLayouts.insert(r.transform);}
                 if(!Same(r.currentPosition,desiredPosition))
                 {
                     if(r.rect)api.setPosition(transform,&desiredPosition,nullptr);
                     else {V3 localPosition=r.local;localPosition.x=desiredPosition.x;localPosition.y=desiredPosition.y;api.setLocal(transform,&localPosition,nullptr);}
-                    r.layout.changed=true;
+                    r.layout.changed=true;changedLayouts.insert(r.transform);
                 }
                 api.scale(transform,&r.layout.appliedScale,nullptr);
                 if(r.rect)api.position(transform,&r.layout.appliedPosition,nullptr);
@@ -448,7 +541,7 @@ namespace HUD
         {
             for(auto& pair:records)
             {
-                auto& r=pair.second;if(!visibilityDirty.count(r.id))continue;
+                auto& r=pair.second;if(r.layoutOnly || !visibilityDirty.count(r.id))continue;
                 if(!HiddenNow(r) && !r.alphaChanged && !r.rendererChanged)continue;
                 if(!Identity(r)){Guard([&]{Restore(r);});continue;}
                 const bool hidden=HiddenNow(r) && Active(r.transform);auto* component=Resolve(r.id);
@@ -468,19 +561,92 @@ namespace HUD
                 }
             }
         }
+        bool ParentLinear(const Record& r,std::unordered_map<int,Matrix>& cache,Matrix& result)
+        {
+            result={};
+            for(auto edge=r.chain.rbegin();edge!=r.chain.rend();++edge)
+            {
+                if(!Resolve(edge->first) || Parent(edge->first)!=edge->second)return false;
+                const int id=edge->second;if(id==rootTransformId)continue;
+                if(const auto found=cache.find(id);found!=cache.end()){result=found->second;continue;}
+                auto* transform=Resolve(id);if(!transform)return false;
+                V3 scale{};Rotation rotation{};api.scale(transform,&scale,nullptr);api.rotation(transform,&rotation,nullptr);
+                if(!std::isfinite(scale.x) || !std::isfinite(scale.y) || std::abs(rotation.x)+std::abs(rotation.y)>.0001f)return false;
+                result=Product(result,Transform({},scale,rotation));cache.emplace(id,result);
+            }
+            return true;
+        }
+        void MaintainLayouts()
+        {
+            if(!settings || restored || faulted.load() || layoutIds.empty() || !LayoutDemand())return;
+            if(api.resolve(rootId,nullptr)!=rootToken)return;
+            ClearFrame();std::unordered_map<int,Matrix> linears;
+            // One controller owns each unit. Native animations keep all child
+            // transforms; only the unit's position and scale are composed here.
+            for(int id:layoutIds)
+            {
+                const auto it=records.find(id);if(it==records.end())continue;
+                auto& r=it->second;if(!r.layoutTarget || (!r.applyScale && Same(r.canvasShift,V2{})))continue;
+                auto* transform=api.resolve(r.transform,nullptr);if(!transform || transform!=r.token)continue;
+                if(r.chain.empty() || api.parent(transform,nullptr)!=api.resolve(r.chain.front().second,nullptr))continue;
+                V2 current{};api.position(transform,&current,nullptr);V3 scale=r.layout.applied?r.layout.appliedScale:r.layout.scale;
+                if(r.applyScale)api.scale(transform,&scale,nullptr);
+                Observe(r.layout,scale,current);
+                Matrix parent{};V2 translation{};
+                if(!ParentLinear(r,linears,parent) || !InverseVector(parent,r.canvasShift,translation))continue;
+                V3 desiredScale=scale;
+                if(r.applyScale)
+                {
+                    desiredScale={r.layout.scale.x*r.factor,r.layout.scale.y*r.factor,r.layout.scale.z};
+                }
+                const auto desired=Add(r.layout.position,translation);
+                if(r.applyScale && !Same(scale,desiredScale)){api.setScale(transform,&desiredScale,nullptr);r.layout.changed=true;changedLayouts.insert(r.transform);}
+                if(!Same(current,desired)){api.setPosition(transform,&desired,nullptr);r.layout.changed=true;changedLayouts.insert(r.transform);}
+                r.layout.appliedPosition=desired;if(r.applyScale)r.layout.appliedScale=desiredScale;r.layout.applied=true;
+            }
+            RefreshMasks();
+        }
         bool Key(int key,bool& held)
         {DWORD pid=0;GetWindowThreadProcessId(GetForegroundWindow(),&pid);const bool down=key && pid==GetCurrentProcessId() && (GetAsyncKeyState(key)&0x8000);const bool pressed=down && !held;held=down;return pressed;}
         void Export()
         {
             std::ofstream file(Support::PluginDirectory()/L"ui-tree.txt",std::ios::binary|std::ios::trunc);if(!file)return;
-            file<<"# MainUICustomizer: activeSelf<TAB>relative path; approved drawing components annotated; no text contents.\n";
+            file<<"# MainUICustomizer: activeSelf<TAB>relative path; HUD layout metadata; no text contents.\n";
+            std::unordered_map<int,const Record*> byTransform;
+            for(const auto& pair:records)if(pair.second.layoutRoot || !byTransform.count(pair.second.transform))byTransform[pair.second.transform]=&pair.second;
             struct Item{void* transform;std::string path;unsigned depth;};
             std::vector<Item> work{{Resolve(rootTransformId),"",0}};size_t count=0;
             while(!work.empty() && count++<20000)
             {
                 auto item=std::move(work.back());work.pop_back();if(!item.transform)continue;
                 auto* object=api.owner(item.transform,nullptr);const auto match=Classify(item.path,regions);
-                file<<(api.active(object,nullptr)?1:0)<<'\t'<<UI::MainPagePath<<(item.path.empty()?"":"/"+item.path)<<"\tapproved_region="<<(match.presets!=0)<<'\n';
+                file<<(api.active(object,nullptr)?1:0)<<'\t'<<UI::MainPagePath<<(item.path.empty()?"":"/"+item.path)<<"\tapproved_region="<<(match.presets!=0);
+                if(match.presets || byTransform.count(Id(item.transform)))
+                {
+                    const int transform=Id(item.transform);
+                    file<<"\tid="<<transform<<"\tcomponents=";
+                    for(const char* type:{"Image","RawImage","Text","SimpleText","SmoothMask","Mask","RectMask2D","Selectable","EventTrigger","ScrollRect",
+                        "MonoActionBtn","MonoBaseSkillBtn","MonoTeamButtonContainer","Animator","ContentSizeFitter","HorizontalLayoutGroup","VerticalLayoutGroup","LayoutElement"})
+                        if(Component(object,type))file<<type<<',';
+                    V3 local{},scale{};api.local(item.transform,&local,nullptr);api.scale(item.transform,&scale,nullptr);
+                    file<<"\tlocal="<<local.x<<','<<local.y<<','<<local.z<<"\tscale="<<scale.x<<','<<scale.y<<','<<scale.z;
+                    if(Component(object,"RectTransform"))
+                    {
+                        V2 anchored{};Rect rect{};api.position(item.transform,&anchored,nullptr);api.rect(item.transform,&rect,nullptr);
+                        file<<"\tanchored="<<anchored.x<<','<<anchored.y<<"\trect="<<rect.x<<','<<rect.y<<','<<rect.width<<','<<rect.height;
+                    }
+                    if(const auto it=byTransform.find(transform);it!=byTransform.end())
+                    {
+                        const auto& r=*it->second;
+                        file<<"\tkind="<<r.kind<<"\ttarget="<<r.layoutTarget<<"\tchanged="<<r.layout.changed
+                            <<"\tbaseline="<<r.layout.position.x<<','<<r.layout.position.y
+                            <<"\tapplied="<<r.layout.appliedPosition.x<<','<<r.layout.appliedPosition.y
+                            <<"\tscale_baseline="<<r.layout.scale.x<<','<<r.layout.scale.y<<','<<r.layout.scale.z
+                            <<"\tscale_applied="<<r.layout.appliedScale.x<<','<<r.layout.appliedScale.y<<','<<r.layout.appliedScale.z;
+                        if(r.layoutRoot)file<<"\tscale_unit="<<r.scaleRoot<<"\tmargin_region="<<r.marginRoot<<"\tfactor="<<r.factor;
+                    }
+                }
+                file<<'\n';
                 const int children=api.count(item.transform,nullptr);if(item.depth>=48 || children<0 || children>4096)continue;
                 for(int i=children-1;i>=0;--i){auto* child=api.child(item.transform,i,nullptr);if(child)work.push_back({child,item.path+(item.path.empty()?"":"/")+Name(child),item.depth+1});}
             }
@@ -513,10 +679,10 @@ namespace HUD
             if(captured && !DiscoverRoot(captured,replaced))return;
             if(!Demand() && !(command&2)){RestoreAll();return;}
             if(!captured && !DiscoverRoot(0,replaced))return;force=force || replaced;
-            if(command&2){ResetCache();LoadRegions(true);Export();force=true;}
+            if(command&2){LoadRegions(true);MaintainLayouts();Export();ResetCache();LoadRegions(true);force=true;}
             effectiveMask=HiddenMask(*settings);
             if(restored || faulted.load()){RestoreAll();return;}
-            EnsureRegions();
+            EnsureRegions();EnsureLayoutRoots();
             const UI::Settings defaults;const auto& old=previous?*previous:defaults;
             const auto hideChanged=HiddenMask(old)^effectiveMask;
             const bool pathsChanged=old.hiddenPaths!=settings->hiddenPaths;
@@ -530,7 +696,7 @@ namespace HUD
                 const bool visibility=force || added.count(r.id) || (r.match.presets&hideChanged) || pathDirty;
                 if(visibility){visibilityDirty.insert(r.id);if(r.match.topRight)topVisibility=true;}
                 if((force || added.count(r.id) || scaleChanged || (r.match.edges&edges) || (r.match.topRight && alignChanged)) &&
-                    (LayoutNeeded(r.match) || r.layout.changed))layoutDirty.insert(r.id);
+                    (LayoutNeeded(r) || r.layout.changed))layoutDirty.insert(r.id);
             }
             if(topVisibility && (old.alignRightButtons || settings->alignRightButtons))
                 for(const auto& pair:records)if(pair.second.match.topRight)layoutDirty.insert(pair.first);
@@ -540,7 +706,7 @@ namespace HUD
                 for(int id:layoutDirty){auto& r=records.at(id);if(!r.layoutTarget && r.layout.changed)RestoreLayout(r);}
                 if(LayoutDemand())ApplyLayouts();
             }
-            ApplyVisibility();
+            ApplyVisibility();RefreshMasks();
         }
 
         void __fastcall OnAwake(void* page,void* method)
@@ -553,7 +719,7 @@ namespace HUD
         {
             originalRender(method);if(!ready.load(std::memory_order_acquire) || applying)return;
             DWORD empty=0;uiThread.compare_exchange_strong(empty,GetCurrentThreadId());if(uiThread.load()!=GetCurrentThreadId())return;
-            applying=true;bool ok=false;try{ok=Guard([]{Update();});}catch(...){}
+            applying=true;bool ok=false;try{ok=Guard([]{Update();MaintainLayouts();});}catch(...){}
             if(!ok){faulted.store(true);ready.store(false);try{RestoreAll();}catch(...){}}
             applying=false;
         }
@@ -569,6 +735,8 @@ namespace HUD
             LOAD(id,InstanceId);LOAD(resolve,FromId);LOAD(count,ChildCount);LOAD(component,ComponentByName);LOAD(childPath,FindTransform);LOAD(child,Child);LOAD(active,ActiveSelf);
             LOAD(rendererEnabled,ReadRendererEnabled);LOAD(setRendererEnabled,SetRendererEnabled);LOAD(scale,ReadScale);LOAD(local,ReadLocalPosition);LOAD(setScale,SetScale);
             LOAD(position,ReadPosition);LOAD(setPosition,SetPosition);LOAD(rect,ReadRect);LOAD(rotation,ReadRotation);
+            LOAD(maskDirty,MaskSetParamsDirty);LOAD(maskRebuild,MaskRebuild);
+            LOAD(rectClip,RectMaskPerformClipping);
 #undef LOAD
             api.color=reinterpret_cast<ColorGet>(address(Native::ReadCanvasColor));api.setAlpha=reinterpret_cast<FloatSet>(address(Native::SetCanvasAlpha));
             api.setLocal=reinterpret_cast<V3Set>(address(Native::SetLocalPosition));auto* target=address(Native::WillRender);auto* awake=address(Native::MainAwake);

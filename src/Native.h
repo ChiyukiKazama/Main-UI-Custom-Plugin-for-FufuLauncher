@@ -31,6 +31,9 @@ inline constexpr Method SetScale{0x1437210, "48 89 5C 24 08 57 48 83 EC 20 48 8B
 inline constexpr Method ReadPosition{0x1443E20, "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B F2 48 8B D9 48 85 C9 74 4A E8 81 6F 00 00 48"};
 inline constexpr Method SetPosition{0x1443E90, "48 89 5C 24 10 57 48 83 EC 20 F3 0F 10 02 48 8B D9 F3 0F 10 4A 04 F3 0F 11 44 24 30 F3 0F 11 4C"};
 inline constexpr Method ReadRect{0x1443BF0, "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 48 8B D9 48 85 C9 74 23 E8 B6 71 00 00 48 85 C0 74 19 48"};
+inline constexpr Method MaskSetParamsDirty{0x19DC27C0, "C6 81 30 01 00 00 01 C3"};
+inline constexpr Method MaskRebuild{0x19DC4BF0, "56 53 48 83 EC 28 48 89 CE C6 81 50 01 00 00 00 80 B9 30 01 00 00 00 75 35 48 8B 4E 70 48 85 C9"};
+inline constexpr Method RectMaskPerformClipping{0x19DA6160, "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 01 00 00 48 8D AC 24 80 00 00 00 44 0F 29 A5 80"};
 inline constexpr Method WillRender{0x19D7B2B0, "48 8B 05 31 8B A0 EB 48 8B 80 00 0F 00 00 48 85 C0 74 0F 4C 8B 40 18 48 8B 50 28 48 8B 48 40 49"};
 inline constexpr Method MainAwake{0x1220A080, "56 57 53 48 83 EC 20 48 89 CE 80 3D B4 D8 54 F3 00 0F 85 A1 01 00 00 48 8B 7E 50 48 8B 5E 60 48"};
 }

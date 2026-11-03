@@ -106,7 +106,8 @@ namespace HUD
             {if(!parts[i+2].empty() && parts[i+2].find_first_not_of("0123456789")==part.npos)result.unit=prefix(i+3);break;}
             if(parts[i]=="ActionBtnPanel" && i+1<parts.size())
             {result.unit=prefix(i+(parts[i+1]=="GrpSkill" && i+2<parts.size()?3:2));result.particle=true;break;}
-            if(parts[i]=="GrpButtons" && i+1<parts.size()){result.unit=prefix(i+2);break;}
+            if((parts[i]=="GrpButtons" || parts[i]=="GrpFactor" || parts[i]=="GrpFactorContainer") && i+1<parts.size() && parts[i+1]!="GrpSituationButton")
+            {result.unit=prefix(i+2);break;}
             if(parts[i]=="MapInfo" && i+1<parts.size() && parts[i+1]!="GrpButtons" && parts[i+1]!="GrpFactor" && parts[i+1]!="GrpFactorContainer")
             {result.unit=prefix(i+2);break;}
             if(parts[i]=="GrpSituationButton" && i+1<parts.size()){result.unit=prefix(i+2);break;}
