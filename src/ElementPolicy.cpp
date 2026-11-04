@@ -31,6 +31,7 @@ namespace HUD
     {
         static const std::vector<Binding> values={
             {UI::MiniMap,0x78,false},{UI::Team,0x70,false},{UI::QuestTracking,0x2E0,false},{UI::SkillControls,0x2D8,false},
+            {UI::QuestTracking,0x490,false,nullptr,"SimpleText"},{UI::QuestTracking,0x1D0,false,nullptr,"MonoReturnToQuestBtn"},
             {UI::ChatButton,0x3B8,true,"Content/Title/Key_PC/ChatIcon"},{UI::ChatButton,0x3B8,true,"Content/ActionButton_PS/Key_PS4"},
             {UI::ChatPanel,0x3B8,true,"Content/ScrollView"},{UI::ChatPanel,0x3B8,true,"Content/ImgBg"},
             {UI::TopLeftButtons,0x88,true},{UI::TopLeftButtons,0x80,true,"GrpFactor"},{UI::TopLeftButtons,0x80,true,"GrpFactorContainer"},
@@ -77,7 +78,9 @@ namespace HUD
     bool ValidRegion(const std::string& path,UI::Preset preset)
     {
         if(Forbidden(path) || path=="GrpMainPage" || preset==UI::AllMainUi)return false;
-        if(preset==UI::QuestTracking)return Within(path,"GrpMainPage") && path.find("Quest")!=path.npos;
+        // These regions are accepted only after Engine checks the serialized
+        // MonoQuestHintText / MonoInteePanel component, not a prefab name.
+        if(preset==UI::QuestTracking || preset==UI::Interaction)return true;
         for(const auto& region:FixedRegions())if(region.preset==preset && Within(path,region.path))return true;
         // Other top-right entries are typed serialized fields, but their region
         // must still be inside the reviewed top-panel namespace.
@@ -105,7 +108,7 @@ namespace HUD
             if(parts[i]=="TeamBtnContainer" && i+2<parts.size() && parts[i+1]=="Content")
             {if(!parts[i+2].empty() && parts[i+2].find_first_not_of("0123456789")==part.npos)result.unit=prefix(i+3);break;}
             if(parts[i]=="ActionBtnPanel" && i+1<parts.size())
-            {result.unit=prefix(i+(parts[i+1]=="GrpSkill" && i+2<parts.size()?3:2));result.particle=true;break;}
+            {result.unit=prefix(i+(parts[i+1]=="GrpSkill" && i+2<parts.size()?3:2));break;}
             if((parts[i]=="GrpButtons" || parts[i]=="GrpFactor" || parts[i]=="GrpFactorContainer") && i+1<parts.size() && parts[i+1]!="GrpSituationButton")
             {result.unit=prefix(i+2);break;}
             if(parts[i]=="MapInfo" && i+1<parts.size() && parts[i+1]!="GrpButtons" && parts[i+1]!="GrpFactor" && parts[i+1]!="GrpFactorContainer")
