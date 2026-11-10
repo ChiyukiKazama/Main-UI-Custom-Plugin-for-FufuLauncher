@@ -6,7 +6,7 @@
 
 将发布包中的 MainUICustomizer.dll 和 config.ini 放入启动器插件子目录。升级时保留自己的 config.ini，只替换 DLL，完整重启游戏后生效。插件只读取配置，不改写用户设置。
 
-当前构建面向国服 7.2，校验对应游戏程序的 PE 指纹和全部 40 个入口的字节；其他构建不安装挂钩。默认配置的 GameVersion 为 7.2，旧配置升级到 7.2 时需手动同步这一项。入口与字段已完成离线核验，游戏内显隐、布局、遮罩和快捷键仍需实测，详见 [7.2 适配记录](docs/compatibility-7.2.md)。
+支持已适配的国服与国际服 7.2.0 构建。根据进程名、PE 时间戳和映像大小选择对应的 40 个入口及 HUD 字段布局，校验全部入口字节后才安装挂钩；其他构建不初始化。两服共用配置，默认 GameVersion 为 7.2，旧配置升级到 7.2 时需手动同步这一项。构建指纹、入口来源和验证方法见 [7.2 适配记录](docs/compatibility-7.2.md)。
 
 设置可在启动器配置页或 DLL 同目录的 UTF-8 config.ini 中修改。保存触发文件变更通知；相同选项值不会重复应用，空文件或无效配置保留上一份有效设置。
 
@@ -80,6 +80,17 @@ Value = GrpMainPage/MapInfo/BtnClock | GrpMainPage/NetworkLatency
 默认 Release/x64，可用 -Configuration Debug 构建调试版本。DLL 在 bin/x64/Release，中间文件在 obj。构建仅在输出目录缺少配置时复制根目录默认配置；-SyncDefaultConfig 可明确覆盖输出默认配置。
 
 打包读取根目录 config.ini，核对版本并验证 ZIP 条目内容哈希，拒绝覆盖已有同名包。发布包顶层只含 DLL 和配置；可通过 package.ps1 -OutputDirectory 指定输出目录。版本来自 src/Version.h。
+
+## 适配测试
+
+```powershell
+MSBuild.exe tests/NativeProfileTests.vcxproj /p:Configuration=Release /p:Platform=x64
+./bin/x64/Tests/NativeProfileTests.exe
+# 可选：只读校验本机游戏程序的全部入口字节，不启动或注入游戏
+./bin/x64/Tests/NativeProfileTests.exe 'C:/Games/Genshin Impact/GenshinImpact.exe'
+```
+
+测试覆盖国服／国际服构建选择、错误进程名与指纹拒绝、40 个入口及 HUD 字段绑定。CI 打包前运行不依赖游戏文件的测试；游戏程序校验使用本机文件，不分发游戏二进制或元数据。
 
 ## GitHub Actions
 

@@ -1,4 +1,5 @@
-// CN 7.2 only; captured from dump7.2.cs and cn72.exe (see docs/compatibility-7.2.md).
+// CN 7.2 entry data; NativeProfile.h selects the game build and managed layout.
+// Captured from dump7.2.cs and cn72.exe (see docs/compatibility-7.2.md).
 // SHA256: 8b014f64b5dc12fbc476e0c362b053abfdd7a1378cd282e4ad81057621dbd6b5
 // Native icalls use the verified E9 destination, preserving the output-buffer ABI.
 #pragma once

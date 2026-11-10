@@ -963,9 +963,9 @@ namespace HUD
         }
         bool Initialize()
         {
-            wchar_t executable[MAX_PATH]{};
-            const DWORD length=GetModuleFileNameW(nullptr,executable,MAX_PATH);
-            if(!length || length>=MAX_PATH)return false;
+            wchar_t executable[32768]{};
+            const DWORD length=GetModuleFileNameW(nullptr,executable,32768);
+            if(!length || length>=32768)return false;
             const auto name=std::filesystem::path(executable).filename().wstring();
             const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
             Guard([&]{const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>0x1000)return;

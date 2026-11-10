@@ -28,6 +28,11 @@ Copy-Item -LiteralPath (Join-Path $root 'src/MainUICustomizer.rc') -Destination 
 $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
 $msbuild=@(& $vswhere -latest -products '*' -version '[18.0,19.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'MSBuild\**\Bin\MSBuild.exe') | Select-Object -First 1
 if ($LASTEXITCODE -ne 0 -or -not $msbuild) { throw 'Visual Studio 2026 MSBuild with C++ tools is required.' }
+$tests=Join-Path $work 'tests'
+& $msbuild (Join-Path $root 'tests/NativeProfileTests.vcxproj') /m /nologo /v:minimal /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v145 "/p:OutDir=$tests\" "/p:IntDir=$work\tests-intermediate\"
+if ($LASTEXITCODE -ne 0) { throw 'Native profile tests build failed.' }
+& (Join-Path $tests 'NativeProfileTests.exe')
+if ($LASTEXITCODE -ne 0) { throw 'Native profile tests failed.' }
 $build=Join-Path $work 'build'
 & $msbuild (Join-Path $root 'MainUICustomizer.vcxproj') /m /nologo /v:minimal /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v145 "/p:OutDir=$build\" "/p:IntDir=$work\intermediate\" "/p:VersionResourceFile=$resource\MainUICustomizer.rc"
 if ($LASTEXITCODE -ne 0) { throw 'Release x64 v145 build failed.' }
