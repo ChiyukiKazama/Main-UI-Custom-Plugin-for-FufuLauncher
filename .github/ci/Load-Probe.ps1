@@ -1,6 +1,6 @@
 param([Parameter(Mandatory)][string]$Root,[Parameter(Mandatory)][string]$Dll)
 . (Join-Path $PSScriptRoot 'Common.ps1')
-# Audited PluginWorker returns before initialization unless the host is YuanShen.exe.
+# Audited PluginWorker returns before initialization unless the host is a supported game executable.
 # Process exit owns DLL teardown: never unload while its attach thread can be running.
 Assert-LoadSafe $Root
 Add-Type @'

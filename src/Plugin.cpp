@@ -1,14 +1,16 @@
 // Copyright (c) FufuLauncher Dev Team. AGPL-3.0.
 #include "Engine.h"
 #include "Support.h"
+#include "NativeProfile.h"
 
 namespace
 {
     DWORD WINAPI PluginWorker(void*)
     {
         wchar_t executable[32768]{};
-        if (!GetModuleFileNameW(nullptr,executable,32768) ||
-            _wcsicmp(std::filesystem::path(executable).filename().c_str(),L"YuanShen.exe") != 0) return 0;
+        const DWORD length = GetModuleFileNameW(nullptr,executable,32768);
+        if (!length || length >= 32768 ||
+            !Native::IsGameExecutable(std::filesystem::path(executable).filename().wstring())) return 0;
         HMODULE pinned = nullptr;
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
             reinterpret_cast<LPCWSTR>(&PluginWorker),&pinned)) return 0;

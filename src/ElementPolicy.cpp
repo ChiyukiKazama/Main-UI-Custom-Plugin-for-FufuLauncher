@@ -29,20 +29,21 @@ namespace HUD
     }
     const std::vector<Binding>& Bindings()
     {
+        using Field=Native::PageField;
         static const std::vector<Binding> values={
-            {UI::MiniMap,0x78,false},{UI::Team,0x70,false},{UI::QuestTracking,0x2E0,false},{UI::SkillControls,0x2D8,false},
-            {UI::QuestTracking,0x490,false,nullptr,"SimpleText"},{UI::QuestTracking,0x1D0,false,nullptr,"MonoReturnToQuestBtn"},
-            {UI::ChatButton,0x3B8,true,"Content/Title/Key_PC/ChatIcon"},{UI::ChatButton,0x3B8,true,"Content/ActionButton_PS/Key_PS4"},
-            {UI::ChatPanel,0x3B8,true,"Content/ScrollView"},{UI::ChatPanel,0x3B8,true,"Content/ImgBg"},
-            {UI::TopLeftButtons,0x88,true},{UI::TopLeftButtons,0x80,true,"GrpFactor"},{UI::TopLeftButtons,0x80,true,"GrpFactorContainer"},
-            {UI::TopLeftButtons,0x80,true,"BtnToggle"},{UI::TopLeftButtons,0x130,false},{UI::TopLeftButtons,0x398,false},{UI::TopLeftButtons,0x80,true,"BtnClock"},
-            {UI::TopRightButtons,0x98,true},{UI::Paimon,0x110,false},{UI::Activities,0x108,false},{UI::Activities,0x1A0,false},
-            {UI::Bag,0xF0,false},{UI::Character,0xE0,false},{UI::Gacha,0xF8,false},{UI::BattlePass,0x1B0,false},
-            {UI::Handbook,0x188,false},{UI::Handbook,0x190,false},{UI::Coop,0xB8,false},
-            {UI::PlayerHealthStatus,0x48,false,"HPBarContainer"},{UI::PlayerHealthStatus,0x48,false,"HPBarCustomLevelContainer"},
-            {UI::PlayerHealthStatus,0x48,false,"Layout"},{UI::PlayerHealthStatus,0x48,false,"SPBar"},{UI::PlayerHealthStatus,0x48,false,"SPBarV2"},{UI::PlayerHealthStatus,0x48,false,"ClimateBar"},
-            {UI::QuestButton,0xD8,false},{UI::SnezhnayaIcon,0x80,true,"GrpFactor/GrpSituationButton/SituationButton_SnezhnayaBook(Clone)"},
-            {UI::Interaction,0x1F8,false},{UI::Ping,0x218,false},{UI::MiliastraEntrance,0x1B8,false},{UI::MiliastraEntrance,0x1C0,false},{UI::ElementalSight,0x370,false}
+            {UI::MiniMap,Field::MiniMap,false},{UI::Team,Field::Team,false},{UI::QuestTracking,Field::QuestTrace,false},{UI::SkillControls,Field::SkillControls,false},
+            {UI::QuestTracking,Field::QuestDistance,false,nullptr,"SimpleText"},{UI::QuestTracking,Field::ReturnToQuest,false,nullptr,"MonoReturnToQuestBtn"},
+            {UI::ChatButton,Field::Chat,true,"Content/Title/Key_PC/ChatIcon"},{UI::ChatButton,Field::Chat,true,"Content/ActionButton_PS/Key_PS4"},
+            {UI::ChatPanel,Field::Chat,true,"Content/ScrollView"},{UI::ChatPanel,Field::Chat,true,"Content/ImgBg"},
+            {UI::TopLeftButtons,Field::TopLeftButtons,true},{UI::TopLeftButtons,Field::MapInfo,true,"GrpFactor"},{UI::TopLeftButtons,Field::MapInfo,true,"GrpFactorContainer"},
+            {UI::TopLeftButtons,Field::MapInfo,true,"BtnToggle"},{UI::TopLeftButtons,Field::TopLeftExtra,false},{UI::TopLeftButtons,Field::TopLeftScene,false},{UI::TopLeftButtons,Field::MapInfo,true,"BtnClock"},
+            {UI::TopRightButtons,Field::TopRightButtons,true},{UI::Paimon,Field::Paimon,false},{UI::Activities,Field::Activities,false},{UI::Activities,Field::ActivitiesExtra,false},
+            {UI::Bag,Field::Bag,false},{UI::Character,Field::Character,false},{UI::Gacha,Field::Gacha,false},{UI::BattlePass,Field::BattlePass,false},
+            {UI::Handbook,Field::Handbook,false},{UI::Handbook,Field::HandbookExtra,false},{UI::Coop,Field::Coop,false},
+            {UI::PlayerHealthStatus,Field::PlayerStatus,false,"HPBarContainer"},{UI::PlayerHealthStatus,Field::PlayerStatus,false,"HPBarCustomLevelContainer"},
+            {UI::PlayerHealthStatus,Field::PlayerStatus,false,"Layout"},{UI::PlayerHealthStatus,Field::PlayerStatus,false,"SPBar"},{UI::PlayerHealthStatus,Field::PlayerStatus,false,"SPBarV2"},{UI::PlayerHealthStatus,Field::PlayerStatus,false,"ClimateBar"},
+            {UI::QuestButton,Field::QuestButton,false},{UI::SnezhnayaIcon,Field::MapInfo,true,"GrpFactor/GrpSituationButton/SituationButton_SnezhnayaBook(Clone)"},
+            {UI::Interaction,Field::Interaction,false},{UI::Ping,Field::Ping,false},{UI::MiliastraEntrance,Field::MiliastraEntrance,false},{UI::MiliastraEntrance,Field::MiliastraEntranceExtra,false},{UI::ElementalSight,Field::ElementalSight,false}
         };return values;
     }
     const std::vector<Region>& FixedRegions()

@@ -1,7 +1,6 @@
 /bin/
 /obj/
 /dist/
-/tests/
 /scripts/
 /test.ps1
 /.vs/

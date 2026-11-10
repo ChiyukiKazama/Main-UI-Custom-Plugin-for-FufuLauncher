@@ -2,7 +2,7 @@
 #include "Engine.h"
 #include "ElementPolicy.h"
 #include "LayoutMath.h"
-#include "Native.h"
+#include "NativeProfile.h"
 #include "Support.h"
 #include "HookSetupGuard.h"
 #include <MinHook.h>
@@ -50,6 +50,7 @@ namespace HUD
             V2Get position=nullptr;V2Set setPosition=nullptr;RectGet rect=nullptr;RotationGet rotation=nullptr;
             AwakeFn maskDirty=nullptr,maskRebuild=nullptr,rectClip=nullptr;
         } api;
+        const Native::Profile* profile=nullptr;
         std::shared_ptr<const UI::Settings> pending=std::make_shared<UI::Settings>(),settings;
         std::string acceptedConfig;
         std::atomic<bool> ready{false},faulted{false};
@@ -326,7 +327,7 @@ namespace HUD
                 const auto& binding=Bindings()[i];
                 const bool typed=binding.preset==UI::QuestTracking || binding.preset==UI::Interaction;
                 if((boundFields[i] && !typed) || (!all && !RegionNeeded({"",binding.preset,Edges(binding.preset)}) && settings->hiddenPaths.empty()))continue;
-                auto* value=*reinterpret_cast<void**>(static_cast<unsigned char*>(page)+binding.offset);
+                auto* value=*reinterpret_cast<void**>(static_cast<unsigned char*>(page)+profile->layout.Offset(binding.field));
                 if(!value)continue;
                 if(typed){boundFields[i]=RegisterTypedRegion(value,binding.preset,binding.type);continue;}
                 auto* object=value && !binding.gameObject?api.owner(value,nullptr):value;if(!object)continue;
@@ -942,7 +943,7 @@ namespace HUD
                 if(!watchVisuals.load(std::memory_order_acquire))return;
                 // MonoInteePanel owns the current-option and switch-key
                 // instances. They can be cloned or reparented after row setup.
-                for(size_t offset:{size_t{0x50},size_t{0x68}})
+                for(size_t offset:profile->layout.interactionKeys)
                     QueueVisual(*reinterpret_cast<void**>(static_cast<unsigned char*>(panel)+offset),UI::PresetCount,nullptr,true);
             });
         }
@@ -962,12 +963,18 @@ namespace HUD
         }
         bool Initialize()
         {
-            const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));bool compatible=false;
+            wchar_t executable[MAX_PATH]{};
+            const DWORD length=GetModuleFileNameW(nullptr,executable,MAX_PATH);
+            if(!length || length>=MAX_PATH)return false;
+            const auto name=std::filesystem::path(executable).filename().wstring();
+            const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
             Guard([&]{const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>0x1000)return;
-                const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);compatible=nt->Signature==IMAGE_NT_SIGNATURE && nt->FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64 && nt->FileHeader.TimeDateStamp==Native::Timestamp && nt->OptionalHeader.SizeOfImage==Native::ImageSize;});
-            if(!compatible)return false;bool valid=true;
-            auto address=[&](const Native::Method& method)->void*{auto* p=reinterpret_cast<void*>(base+method.rva);const bool match=Support::MatchesEntryBytes(p,method.bytes);if(!match)valid=false;return match?p:nullptr;};
-#define LOAD(field,method) api.field=reinterpret_cast<decltype(api.field)>(address(Native::method))
+                const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
+                if(nt->Signature==IMAGE_NT_SIGNATURE && nt->FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64)
+                    profile=Native::SelectProfile(name,nt->FileHeader.TimeDateStamp,nt->OptionalHeader.SizeOfImage);});
+            if(!profile)return false;bool valid=true;
+            auto address=[&](Native::Entry entry)->void*{const auto& method=profile->Get(entry);auto* p=reinterpret_cast<void*>(base+method.rva);const bool match=Support::MatchesEntryBytes(p,method.bytes);if(!match)valid=false;return match?p:nullptr;};
+#define LOAD(field,method) api.field=reinterpret_cast<decltype(api.field)>(address(Native::Entry::method))
             LOAD(stringNew,StringNew);LOAD(find,FindObject);LOAD(transform,ObjectTransform);LOAD(owner,ComponentObject);LOAD(parent,Parent);LOAD(name,Name);
             LOAD(id,InstanceId);LOAD(resolve,FromId);LOAD(count,ChildCount);LOAD(component,ComponentByName);LOAD(childPath,FindTransform);LOAD(child,Child);LOAD(active,ActiveSelf);
             LOAD(rendererEnabled,ReadRendererEnabled);LOAD(setRendererEnabled,SetRendererEnabled);LOAD(scale,ReadScale);LOAD(local,ReadLocalPosition);LOAD(setScale,SetScale);
@@ -975,22 +982,22 @@ namespace HUD
             LOAD(maskDirty,MaskSetParamsDirty);LOAD(maskRebuild,MaskRebuild);
             LOAD(rectClip,RectMaskPerformClipping);
 #undef LOAD
-            api.color=reinterpret_cast<ColorGet>(address(Native::ReadCanvasColor));api.setAlpha=reinterpret_cast<FloatSet>(address(Native::SetCanvasAlpha));
-            api.setLocal=reinterpret_cast<V3Set>(address(Native::SetLocalPosition));auto* target=address(Native::WillRender);auto* awake=address(Native::MainAwake);
+            api.color=reinterpret_cast<ColorGet>(address(Native::Entry::ReadCanvasColor));api.setAlpha=reinterpret_cast<FloatSet>(address(Native::Entry::SetCanvasAlpha));
+            api.setLocal=reinterpret_cast<V3Set>(address(Native::Entry::SetLocalPosition));auto* target=address(Native::Entry::WillRender);auto* awake=address(Native::Entry::MainAwake);
             struct Hook {void* target;void* callback;void** original;};
             const Hook hooks[]={
                 {target,reinterpret_cast<void*>(&OnRender),reinterpret_cast<void**>(&originalRender)},
                 {awake,reinterpret_cast<void*>(&OnAwake),reinterpret_cast<void**>(&originalAwake)},
-                {address(Native::GraphicEnable),reinterpret_cast<void*>(&OnGraphicEnable),reinterpret_cast<void**>(&originalGraphicEnable)},
-                {address(Native::GraphicLightActivate),reinterpret_cast<void*>(&OnGraphicLightActivate),reinterpret_cast<void**>(&originalGraphicLightActivate)},
-                {address(Native::EffectEnable),reinterpret_cast<void*>(&OnEffectEnable),reinterpret_cast<void**>(&originalEffectEnable)},
-                {address(Native::QuestEnable),reinterpret_cast<void*>(&OnQuestEnable),reinterpret_cast<void**>(&originalQuestEnable)},
-                {address(Native::QuestTraceTick),reinterpret_cast<void*>(&OnQuestTraceTick),reinterpret_cast<void**>(&originalQuestTraceTick)},
-                {address(Native::InteeDialogAdd),reinterpret_cast<void*>(&OnDialogAdd),reinterpret_cast<void**>(&originalDialogAdd)},
-                {address(Native::InteePickupAdd),reinterpret_cast<void*>(&OnPickupAdd),reinterpret_cast<void**>(&originalPickupAdd)},
-                {address(Native::InteeKeyRefresh),reinterpret_cast<void*>(&OnInteeKeyRefresh),reinterpret_cast<void**>(&originalInteeKeyRefresh)},
-                {address(Native::InteeSwitchKeyRefresh),reinterpret_cast<void*>(&OnInteeSwitchKeyRefresh),reinterpret_cast<void**>(&originalInteeSwitchKeyRefresh)},
-                {address(Native::PrefabInstance),reinterpret_cast<void*>(&OnPrefabInstance),reinterpret_cast<void**>(&originalPrefabInstance)}
+                {address(Native::Entry::GraphicEnable),reinterpret_cast<void*>(&OnGraphicEnable),reinterpret_cast<void**>(&originalGraphicEnable)},
+                {address(Native::Entry::GraphicLightActivate),reinterpret_cast<void*>(&OnGraphicLightActivate),reinterpret_cast<void**>(&originalGraphicLightActivate)},
+                {address(Native::Entry::EffectEnable),reinterpret_cast<void*>(&OnEffectEnable),reinterpret_cast<void**>(&originalEffectEnable)},
+                {address(Native::Entry::QuestEnable),reinterpret_cast<void*>(&OnQuestEnable),reinterpret_cast<void**>(&originalQuestEnable)},
+                {address(Native::Entry::QuestTraceTick),reinterpret_cast<void*>(&OnQuestTraceTick),reinterpret_cast<void**>(&originalQuestTraceTick)},
+                {address(Native::Entry::InteeDialogAdd),reinterpret_cast<void*>(&OnDialogAdd),reinterpret_cast<void**>(&originalDialogAdd)},
+                {address(Native::Entry::InteePickupAdd),reinterpret_cast<void*>(&OnPickupAdd),reinterpret_cast<void**>(&originalPickupAdd)},
+                {address(Native::Entry::InteeKeyRefresh),reinterpret_cast<void*>(&OnInteeKeyRefresh),reinterpret_cast<void**>(&originalInteeKeyRefresh)},
+                {address(Native::Entry::InteeSwitchKeyRefresh),reinterpret_cast<void*>(&OnInteeSwitchKeyRefresh),reinterpret_cast<void**>(&originalInteeSwitchKeyRefresh)},
+                {address(Native::Entry::PrefabInstance),reinterpret_cast<void*>(&OnPrefabInstance),reinterpret_cast<void**>(&originalPrefabInstance)}
             };
             if(!valid)return false;Support::HookSetupGuard setup;if(!setup || MH_Initialize()!=MH_OK)return false;
             auto rollback=[&]{for(const auto& hook:hooks){MH_DisableHook(hook.target);MH_RemoveHook(hook.target);}};
