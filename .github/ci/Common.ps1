@@ -22,21 +22,20 @@ function Get-General([string]$Text) {
     return $sections[0].Groups['body']
 }
 
-function Get-GeneralValue([string]$Text,[string]$Key) {
-    $body=Get-General $Text
-    $matches=[regex]::Matches($body.Value,'(?m)^'+[regex]::Escape($Key)+'[ \t]*=[ \t]*(?<value>[^\r\n]*?)[ \t]*\r?$')
+function Get-GeneralValueMatch([Text.RegularExpressions.Group]$Body,[string]$Key) {
+    $matches=[regex]::Matches($Body.Value,'(?m)^'+[regex]::Escape($Key)+'[ \t]*=[ \t]*(?<value>[^\r\n]*?)[ \t]*\r?$')
     if ($matches.Count -ne 1) { throw "Exactly one General.$Key is required." }
-    return $matches[0].Groups['value'].Value
+    return $matches[0].Groups['value']
 }
 
 function Get-PackageConfig([string]$Root,[string]$Version) {
     $utf8=[Text.UTF8Encoding]::new($false,$true)
     $bytes=[IO.File]::ReadAllBytes((Join-Path $Root 'config.ini'))
     $text=$utf8.GetString($bytes)
-    if ((Get-GeneralValue $text 'File') -cne 'MainUICustomizer.dll') { throw 'Default INI DLL filename mismatch.' }
-    if ((Get-GeneralValue $text 'Version') -cne (Get-SourceVersion $Root)) { throw 'Source header and default INI base versions differ.' }
     $body=Get-General $text
-    $value=[regex]::Match($body.Value,'(?m)^Version[ \t]*=[ \t]*(?<value>[^\r\n]*?)[ \t]*\r?$').Groups['value']
+    if ((Get-GeneralValueMatch $body 'File').Value -cne 'MainUICustomizer.dll') { throw 'Default INI DLL filename mismatch.' }
+    # The build version is authoritative; preserve all other configuration verbatim.
+    $value=Get-GeneralValueMatch $body 'Version'
     $index=$body.Index+$value.Index
     return ,$utf8.GetBytes($text.Substring(0,$index)+$Version+$text.Substring($index+$value.Length))
 }

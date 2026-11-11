@@ -89,7 +89,7 @@ Value = GrpMainPage/MapInfo/BtnClock | GrpMainPage/NetworkLatency
 
 发布时，在 **Actions → Build and manual release → Run workflow** 选择默认分支，填写 `version`（例如 `1.2.3`）。版本必须为三段非负整数，不带前导零、前缀、空白或后缀；受 Windows VERSIONINFO 限制，每段不超过 65535。不自动递增，也不提交或回写源码。
 
-手动版本写入临时版本资源和包内默认 INI 的 `General.Version`，用于 DLL 产品版本、ZIP 文件名、Release 标题及 `v版本号` tag。DLL 文件版本采用对应的四段 Windows 格式，例如 `1.2.3.0`。打包始终读取仓库根目录默认配置，仅在包内替换版本行，不读取本机输出目录中的配置，也不操作用户已安装的配置。
+构建版本写入临时版本资源和包内默认 INI 的 `General.Version`，用于 DLL 产品版本和 ZIP 文件名；手动发布也用它生成 Release 标题及 `v版本号` tag。DLL 文件版本采用对应的四段 Windows 格式，例如 `1.2.3.0`。仓库默认 INI 的版本值无需与头文件同步，新增配置节或配置项会原样打入 ZIP。打包不读取本机输出目录中的配置，也不操作用户已安装的配置。
 
 CI 从[官方 UPX 5.0.2 Release](https://github.com/upx/upx/releases/tag/v5.0.2) 下载固定的 win64 ZIP，并核对 `policy.json` 固定的 SHA256，再执行 `--best --ultra-brute`。必须通过 UPX 完整性、解压、体积减小、x64 PE DLL、版本资源、文件名与 ZIP 根目录校验。解压后的 DLL 不要求与原 DLL 哈希相同。
 
