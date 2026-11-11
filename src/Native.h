@@ -1,63 +1,48 @@
 #pragma once
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace Native
 {
     struct Method { uintptr_t rva; const char* bytes; };
 
+    enum class Entry : std::size_t
+    {
+        ReadCanvasColor, SetCanvasAlpha, SetLocalPosition, StringNew, FindObject,
+        ObjectTransform, ComponentObject, ComponentByName, ReadRendererEnabled,
+        SetRendererEnabled, Name, InstanceId, FromId, ActiveSelf, Parent,
+        ChildCount, Child, FindTransform, ReadScale, ReadLocalPosition,
+        ReadRotation, SetScale, ReadPosition, SetPosition, ReadRect,
+        MaskSetParamsDirty, MaskRebuild, RectMaskPerformClipping, WillRender,
+        MainAwake, GraphicEnable, GraphicLightActivate, EffectEnable,
+        EffectSetObject, EffectPlay, FeatureEffectMount, PrefabInstance,
+        QuestEnable, InteeDialogAdd, InteePickupAdd, QuestTraceTick,
+        InteeKeyRefresh, InteeSwitchKeyRefresh, Count
+    };
+
     struct Profile
     {
-        const wchar_t* executableName;
+        std::wstring_view executableName;
         uint32_t timestamp, imageSize;
-        Method ReadCanvasColor;
-        Method SetCanvasAlpha;
-        Method SetLocalPosition;
-        Method StringNew;
-        Method FindObject;
-        Method ObjectTransform;
-        Method ComponentObject;
-        Method ComponentByName;
-        Method ReadRendererEnabled;
-        Method SetRendererEnabled;
-        Method Name;
-        Method InstanceId;
-        Method FromId;
-        Method ActiveSelf;
-        Method Parent;
-        Method ChildCount;
-        Method Child;
-        Method FindTransform;
-        Method ReadScale;
-        Method ReadLocalPosition;
-        Method ReadRotation;
-        Method SetScale;
-        Method ReadPosition;
-        Method SetPosition;
-        Method ReadRect;
-        Method MaskSetParamsDirty;
-        Method MaskRebuild;
-        Method RectMaskPerformClipping;
-        Method WillRender;
-        Method MainAwake;
-        Method GraphicEnable;
-        Method GraphicLightActivate;
-        Method EffectEnable;
-        Method EffectSetObject;
-        Method EffectPlay;
-        Method FeatureEffectMount;
-        Method PrefabInstance;
-        Method QuestEnable;
-        Method InteeDialogAdd;
-        Method InteePickupAdd;
-        Method QuestTraceTick;
-        Method InteeKeyRefresh;
-        Method InteeSwitchKeyRefresh;
+        std::array<Method, static_cast<std::size_t>(Entry::Count)> entries;
+
+        constexpr const Method& Get(Entry entry) const
+        {
+            return entries[static_cast<std::size_t>(entry)];
+        }
+
+        constexpr bool MatchesFingerprint(uint32_t actualTimestamp, uint32_t actualImageSize) const
+        {
+            return timestamp == actualTimestamp && imageSize == actualImageSize;
+        }
     };
 
     // The Unity icalls use the E9 destination and its output-buffer ABI.
     // SHA256: 8b014f64b5dc12fbc476e0c362b053abfdd7a1378cd282e4ad81057621dbd6b5
     inline constexpr Profile CN72{
-        L"YuanShen.exe", 0x6AD886FB, 0x1B65F000,
+        L"YuanShen.exe", 0x6AD886FB, 0x1B65F000, {{
         {0x117E860, "48 89 5C 24 08 57 48 83 EC 30 48 8B FA 48 8B D9 48 85 C9 74 44 E8 E6 D5 2D 00 48 85 C0 74 3A 48"}, // ReadCanvasColor
         {0x117E980, "40 53 48 83 EC 40 0F 29 74 24 30 0F 28 F1 48 8B D9 48 85 C9 74 42 E8 C5 D4 2D 00 48 85 C0 74 38"}, // SetCanvasAlpha
         {0x1447C10, "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 48 8B D9 48 85 C9 74 1F E8 36 42 01 00 48 85 C0 74 15 48"}, // SetLocalPosition
@@ -101,11 +86,12 @@ namespace Native
         {0x87746B0, "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 01 00 00 48 8D AC 24 80 00 00 00 0F 29 BD 80 00"}, // QuestTraceTick
         {0xCF18340, "41 56 56 57 53 48 83 EC 28 48 89 CE 80 3D B1 7C 92 F8 00 0F 85 1A 02 00 00 48 8B 46 50 48 85 C0"}, // InteeKeyRefresh
         {0xCF18ED0, "56 57 53 48 83 EC 30 48 89 CF 80 3D 35 71 92 F8 00 0F 85 BF 00 00 00 48 8B 77 68 48 85 F6 74 64"}, // InteeSwitchKeyRefresh
+        }}
     };
 
     // SHA256: b3001fc110b63e0e0ce24a77386e71d0eefaffaae244ea0c72645a659cb5ea6e
     inline constexpr Profile OS72{
-        L"GenshinImpact.exe", 0x6AD8992C, 0x1B690000,
+        L"GenshinImpact.exe", 0x6AD8992C, 0x1B690000, {{
         {0x117F860, "48 89 5C 24 08 57 48 83 EC 30 48 8B FA 48 8B D9 48 85 C9 74 44 E8 E6 D5 2D 00 48 85 C0 74 3A 48"}, // ReadCanvasColor
         {0x117F980, "40 53 48 83 EC 40 0F 29 74 24 30 0F 28 F1 48 8B D9 48 85 C9 74 42 E8 C5 D4 2D 00 48 85 C0 74 38"}, // SetCanvasAlpha
         {0x1448C10, "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 48 8B D9 48 85 C9 74 1F E8 36 42 01 00 48 85 C0 74 15 48"}, // SetLocalPosition
@@ -149,6 +135,26 @@ namespace Native
         {0x8779D20, "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 18 01 00 00 48 8D AC 24 80 00 00 00 0F 29 BD 80 00"}, // QuestTraceTick
         {0xCF20800, "41 56 56 57 53 48 83 EC 28 48 89 CE 80 3D 1E FD 8A F8 00 0F 85 1A 02 00 00 48 8B 46 50 48 85 C0"}, // InteeKeyRefresh
         {0xCF1FE50, "56 57 53 48 83 EC 30 48 89 CF 80 3D CE 06 8B F8 00 0F 85 BF 00 00 00 48 8B 77 68 48 85 F6 74 64"}, // InteeSwitchKeyRefresh
+        }}
     };
 
+    constexpr wchar_t FoldAscii(wchar_t value)
+    {
+        return value >= L'A' && value <= L'Z' ? value + (L'a' - L'A') : value;
+    }
+
+    constexpr bool SameExecutable(std::wstring_view lhs, std::wstring_view rhs)
+    {
+        if (lhs.size() != rhs.size()) return false;
+        for (std::size_t i = 0; i < lhs.size(); ++i)
+            if (FoldAscii(lhs[i]) != FoldAscii(rhs[i])) return false;
+        return true;
+    }
+
+    constexpr const Profile* FindProfile(std::wstring_view executableName)
+    {
+        for (const auto* profile : {&CN72, &OS72})
+            if (SameExecutable(executableName, profile->executableName)) return profile;
+        return nullptr;
+    }
 }

@@ -995,10 +995,18 @@ namespace HUD
             Guard([&]{const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>0x1000)return;
                 const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
                 compatible=nt->Signature==IMAGE_NT_SIGNATURE && nt->FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64 &&
-                    nt->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC && nt->FileHeader.TimeDateStamp==profile.timestamp && nt->OptionalHeader.SizeOfImage==profile.imageSize;});
+                    nt->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+                    profile.MatchesFingerprint(nt->FileHeader.TimeDateStamp,nt->OptionalHeader.SizeOfImage);});
             if(!compatible)return false;bool valid=true;
-            auto address=[&](const Native::Method& method)->void*{auto* p=reinterpret_cast<void*>(base+method.rva);const bool match=Support::MatchesEntryBytes(p,method.bytes);if(!match)valid=false;return match?p:nullptr;};
-#define LOAD(field,method) api.field=reinterpret_cast<decltype(api.field)>(address(profile.method))
+            using Native::Entry;
+            auto address=[&](Entry entry)->void*{
+                const auto& method=profile.Get(entry);
+                auto* p=reinterpret_cast<void*>(base+method.rva);
+                const bool match=Support::MatchesEntryBytes(p,method.bytes);
+                if(!match)valid=false;
+                return match?p:nullptr;
+            };
+#define LOAD(field,method) api.field=reinterpret_cast<decltype(api.field)>(address(Entry::method))
             LOAD(stringNew,StringNew);LOAD(find,FindObject);LOAD(transform,ObjectTransform);LOAD(owner,ComponentObject);LOAD(parent,Parent);LOAD(name,Name);
             LOAD(id,InstanceId);LOAD(resolve,FromId);LOAD(count,ChildCount);LOAD(component,ComponentByName);LOAD(childPath,FindTransform);LOAD(child,Child);LOAD(active,ActiveSelf);
             LOAD(rendererEnabled,ReadRendererEnabled);LOAD(setRendererEnabled,SetRendererEnabled);LOAD(scale,ReadScale);LOAD(local,ReadLocalPosition);LOAD(setScale,SetScale);
@@ -1006,25 +1014,25 @@ namespace HUD
             LOAD(maskDirty,MaskSetParamsDirty);LOAD(maskRebuild,MaskRebuild);
             LOAD(rectClip,RectMaskPerformClipping);
 #undef LOAD
-            api.color=reinterpret_cast<ColorGet>(address(profile.ReadCanvasColor));api.setAlpha=reinterpret_cast<FloatSet>(address(profile.SetCanvasAlpha));
-            api.setLocal=reinterpret_cast<V3Set>(address(profile.SetLocalPosition));auto* target=address(profile.WillRender);auto* awake=address(profile.MainAwake);
+            api.color=reinterpret_cast<ColorGet>(address(Entry::ReadCanvasColor));api.setAlpha=reinterpret_cast<FloatSet>(address(Entry::SetCanvasAlpha));
+            api.setLocal=reinterpret_cast<V3Set>(address(Entry::SetLocalPosition));auto* target=address(Entry::WillRender);auto* awake=address(Entry::MainAwake);
             struct Hook {void* target;void* callback;void** original;};
             const Hook hooks[]={
                 {target,reinterpret_cast<void*>(&OnRender),reinterpret_cast<void**>(&originalRender)},
                 {awake,reinterpret_cast<void*>(&OnAwake),reinterpret_cast<void**>(&originalAwake)},
-                {address(profile.GraphicEnable),reinterpret_cast<void*>(&OnGraphicEnable),reinterpret_cast<void**>(&originalGraphicEnable)},
-                {address(profile.GraphicLightActivate),reinterpret_cast<void*>(&OnGraphicLightActivate),reinterpret_cast<void**>(&originalGraphicLightActivate)},
-                {address(profile.EffectEnable),reinterpret_cast<void*>(&OnEffectEnable),reinterpret_cast<void**>(&originalEffectEnable)},
-                {address(profile.EffectSetObject),reinterpret_cast<void*>(&OnEffectSetObject),reinterpret_cast<void**>(&originalEffectSetObject)},
-                {address(profile.EffectPlay),reinterpret_cast<void*>(&OnEffectPlay),reinterpret_cast<void**>(&originalEffectPlay)},
-                {address(profile.FeatureEffectMount),reinterpret_cast<void*>(&OnFeatureEffectMount),reinterpret_cast<void**>(&originalFeatureEffectMount)},
-                {address(profile.QuestEnable),reinterpret_cast<void*>(&OnQuestEnable),reinterpret_cast<void**>(&originalQuestEnable)},
-                {address(profile.QuestTraceTick),reinterpret_cast<void*>(&OnQuestTraceTick),reinterpret_cast<void**>(&originalQuestTraceTick)},
-                {address(profile.InteeDialogAdd),reinterpret_cast<void*>(&OnDialogAdd),reinterpret_cast<void**>(&originalDialogAdd)},
-                {address(profile.InteePickupAdd),reinterpret_cast<void*>(&OnPickupAdd),reinterpret_cast<void**>(&originalPickupAdd)},
-                {address(profile.InteeKeyRefresh),reinterpret_cast<void*>(&OnInteeKeyRefresh),reinterpret_cast<void**>(&originalInteeKeyRefresh)},
-                {address(profile.InteeSwitchKeyRefresh),reinterpret_cast<void*>(&OnInteeSwitchKeyRefresh),reinterpret_cast<void**>(&originalInteeSwitchKeyRefresh)},
-                {address(profile.PrefabInstance),reinterpret_cast<void*>(&OnPrefabInstance),reinterpret_cast<void**>(&originalPrefabInstance)}
+                {address(Entry::GraphicEnable),reinterpret_cast<void*>(&OnGraphicEnable),reinterpret_cast<void**>(&originalGraphicEnable)},
+                {address(Entry::GraphicLightActivate),reinterpret_cast<void*>(&OnGraphicLightActivate),reinterpret_cast<void**>(&originalGraphicLightActivate)},
+                {address(Entry::EffectEnable),reinterpret_cast<void*>(&OnEffectEnable),reinterpret_cast<void**>(&originalEffectEnable)},
+                {address(Entry::EffectSetObject),reinterpret_cast<void*>(&OnEffectSetObject),reinterpret_cast<void**>(&originalEffectSetObject)},
+                {address(Entry::EffectPlay),reinterpret_cast<void*>(&OnEffectPlay),reinterpret_cast<void**>(&originalEffectPlay)},
+                {address(Entry::FeatureEffectMount),reinterpret_cast<void*>(&OnFeatureEffectMount),reinterpret_cast<void**>(&originalFeatureEffectMount)},
+                {address(Entry::QuestEnable),reinterpret_cast<void*>(&OnQuestEnable),reinterpret_cast<void**>(&originalQuestEnable)},
+                {address(Entry::QuestTraceTick),reinterpret_cast<void*>(&OnQuestTraceTick),reinterpret_cast<void**>(&originalQuestTraceTick)},
+                {address(Entry::InteeDialogAdd),reinterpret_cast<void*>(&OnDialogAdd),reinterpret_cast<void**>(&originalDialogAdd)},
+                {address(Entry::InteePickupAdd),reinterpret_cast<void*>(&OnPickupAdd),reinterpret_cast<void**>(&originalPickupAdd)},
+                {address(Entry::InteeKeyRefresh),reinterpret_cast<void*>(&OnInteeKeyRefresh),reinterpret_cast<void**>(&originalInteeKeyRefresh)},
+                {address(Entry::InteeSwitchKeyRefresh),reinterpret_cast<void*>(&OnInteeSwitchKeyRefresh),reinterpret_cast<void**>(&originalInteeSwitchKeyRefresh)},
+                {address(Entry::PrefabInstance),reinterpret_cast<void*>(&OnPrefabInstance),reinterpret_cast<void**>(&originalPrefabInstance)}
             };
             if(!valid)return false;Support::HookSetupGuard setup;if(!setup || MH_Initialize()!=MH_OK)return false;
             auto rollback=[&]{for(const auto& hook:hooks){MH_DisableHook(hook.target);MH_RemoveHook(hook.target);}};
