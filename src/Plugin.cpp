@@ -11,15 +11,7 @@ namespace
         const DWORD length = GetModuleFileNameW(nullptr,executable,32768);
         if (!length || length >= 32768) return 0;
         const auto filename = std::filesystem::path(executable).filename();
-        const Native::Profile* profile = nullptr;
-        for (const auto* candidate : {&Native::CN72, &Native::OS72})
-        {
-            if (_wcsicmp(filename.c_str(),candidate->executableName) == 0)
-            {
-                profile = candidate;
-                break;
-            }
-        }
+        const auto* profile = Native::FindProfile(filename.native());
         if (!profile) return 0;
         HMODULE pinned = nullptr;
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,

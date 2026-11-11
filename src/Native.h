@@ -1,5 +1,7 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace Native
 {
@@ -52,6 +54,11 @@ namespace Native
         Method QuestTraceTick;
         Method InteeKeyRefresh;
         Method InteeSwitchKeyRefresh;
+
+        constexpr bool MatchesFingerprint(uint32_t actualTimestamp, uint32_t actualImageSize) const
+        {
+            return timestamp == actualTimestamp && imageSize == actualImageSize;
+        }
     };
 
     // The Unity icalls use the E9 destination and its output-buffer ABI.
@@ -151,4 +158,24 @@ namespace Native
         {0xCF1FE50, "56 57 53 48 83 EC 30 48 89 CF 80 3D CE 06 8B F8 00 0F 85 BF 00 00 00 48 8B 77 68 48 85 F6 74 64"}, // InteeSwitchKeyRefresh
     };
 
+    constexpr wchar_t FoldAscii(wchar_t value)
+    {
+        return value >= L'A' && value <= L'Z' ? value + (L'a' - L'A') : value;
+    }
+
+    constexpr bool SameExecutable(std::wstring_view lhs, std::wstring_view rhs)
+    {
+        if (lhs.size() != rhs.size()) return false;
+        for (std::size_t i = 0; i < lhs.size(); ++i)
+            if (FoldAscii(lhs[i]) != FoldAscii(rhs[i])) return false;
+        return true;
+    }
+
+    constexpr const Profile* FindProfile(std::wstring_view executableName)
+    {
+        constexpr const Profile* profiles[]{&CN72, &OS72};
+        for (const auto* profile : profiles)
+            if (SameExecutable(executableName, profile->executableName)) return profile;
+        return nullptr;
+    }
 }

@@ -995,7 +995,8 @@ namespace HUD
             Guard([&]{const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>0x1000)return;
                 const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
                 compatible=nt->Signature==IMAGE_NT_SIGNATURE && nt->FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64 &&
-                    nt->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC && nt->FileHeader.TimeDateStamp==profile.timestamp && nt->OptionalHeader.SizeOfImage==profile.imageSize;});
+                    nt->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+                    profile.MatchesFingerprint(nt->FileHeader.TimeDateStamp,nt->OptionalHeader.SizeOfImage);});
             if(!compatible)return false;bool valid=true;
             auto address=[&](const Native::Method& method)->void*{auto* p=reinterpret_cast<void*>(base+method.rva);const bool match=Support::MatchesEntryBytes(p,method.bytes);if(!match)valid=false;return match?p:nullptr;};
 #define LOAD(field,method) api.field=reinterpret_cast<decltype(api.field)>(address(profile.method))
