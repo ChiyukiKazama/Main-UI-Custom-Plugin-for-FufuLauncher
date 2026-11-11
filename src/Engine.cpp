@@ -38,6 +38,7 @@ namespace HUD
         using RotationGet=void(__fastcall*)(void*,Rotation*,void*);
         using RenderFn=void(__fastcall*)(void*);
         using AwakeFn=void(__fastcall*)(void*,void*);
+        using EffectSetObjectFn=void(__fastcall*)(void*,void*,void*);
         using AddOptionFn=void*(__fastcall*)(void*,int,void*);
         using PrefabFn=void*(__fastcall*)(void*,int,void*,void*,void*);
         struct Api
@@ -58,9 +59,12 @@ namespace HUD
         AwakeFn originalAwake=nullptr;
         AwakeFn originalGraphicEnable=nullptr,originalGraphicLightActivate=nullptr,originalEffectEnable=nullptr,originalQuestEnable=nullptr,originalQuestTraceTick=nullptr;
         AwakeFn originalInteeKeyRefresh=nullptr,originalInteeSwitchKeyRefresh=nullptr;
+        AwakeFn originalFeatureEffectMount=nullptr;
+        EffectSetObjectFn originalEffectSetObject=nullptr;
+        BoolSet originalEffectPlay=nullptr;
         AddOptionFn originalDialogAdd=nullptr,originalPickupAdd=nullptr;
         PrefabFn originalPrefabInstance=nullptr;
-        struct VisualEvent {int id;void* token;UI::Preset preset;const char* type=nullptr;bool subtree=false;};
+        struct VisualEvent {int id;void* token;UI::Preset preset;const char* type=nullptr;bool subtree=false,gameObject=false;};
         std::mutex visualMutex;
         std::vector<VisualEvent> visualEvents;
         std::atomic<bool> watchVisuals{false},haveVisualEvents{false};
@@ -361,7 +365,8 @@ namespace HUD
             auto* anchorTransform=Resolve(anchorTransformId);
             const auto relative=scope?(region.path==scopePath?std::string{}:region.path.substr(scopePath.size()+1)):region.path;
             auto* transform=knownTransform?knownTransform:(relative.empty()?anchorTransform:Relative(anchorTransform,relative));
-            attempted.insert(region.path);if(!transform)return;
+            if(!refresh)attempted.insert(region.path);
+            if(!transform)return;
             struct Item{void* transform;std::string path;unsigned depth;};
             std::vector<Item> work{{transform,region.path,0}};std::unordered_set<int> visited;
             while(!work.empty() && nodes.size()<8192 && records.size()<4096)
@@ -396,6 +401,8 @@ namespace HUD
                         if(std::none_of(drawings.begin(),drawings.end(),[&](const Drawing& d){return d.component==extra;}))
                             drawings.push_back({extra,type,true});
                 }
+                else if(auto* particles=Component(object,"ParticleSystemRenderer"))
+                    drawings.push_back({particles,"ParticleSystemRenderer",true});
                 // Non-drawing masks are cached for parameter refresh only.
                 if(drawings.empty() && smoothMask)drawings.push_back({smoothMask,"SmoothMask",false,true});
                 if(drawings.empty() && rectMask)drawings.push_back({rectMask,"RectMask2D",false,true});
@@ -432,7 +439,7 @@ namespace HUD
                 auto& childIds=nodes[transformId].childIds;childIds.reserve(static_cast<size_t>(count));
                 for(int i=0;i<count;++i){auto* child=api.child(item.transform,i,nullptr);childIds.push_back(Id(child));if(child)work.push_back({child,item.path+"/"+Name(child),item.depth+1});}
             }
-            if(descendants && work.empty())covered.insert(region.path);
+            if(!refresh && descendants && work.empty())covered.insert(region.path);
         }
         void EnsureRegions()
         {
@@ -489,14 +496,15 @@ namespace HUD
             for(const auto& event:events)
             {
                 auto* component=Resolve(event.id);if(!component || component!=event.token)continue;
-                auto* object=api.owner(component,nullptr);auto* transform=object?api.transform(object,nullptr):nullptr;if(!transform)continue;
+                auto* object=event.gameObject?component:api.owner(component,nullptr);
+                auto* transform=object?api.transform(object,nullptr):nullptr;if(!transform)continue;
                 const int transformId=Id(transform),objectId=Id(object);
                 if(const auto cached=nodes.find(transformId);cached!=nodes.end() && cached->second.object==objectId)
                 {
                     const auto& node=cached->second;
                     const bool sameChain=std::all_of(node.chain.begin(),node.chain.end(),[](const auto& edge){return Resolve(edge.first) && Parent(edge.first)==edge.second;});
                     if(sameChain && !event.subtree && node.graphic==event.id && node.graphicToken==component)continue;
-                    if(sameChain && event.subtree && node.children>=0 && static_cast<size_t>(node.children)==node.childIds.size() &&
+                    if(sameChain && event.subtree && !event.gameObject && node.children>=0 && static_cast<size_t>(node.children)==node.childIds.size() &&
                         api.count(transform,nullptr)==node.children)
                     {
                         bool sameChildren=true;
@@ -897,17 +905,21 @@ namespace HUD
             if(!ready.load(std::memory_order_acquire))return;
             Guard([&]{pendingPage.store(Id(page),std::memory_order_release);});
         }
-        bool QueueVisual(void* component,UI::Preset preset=UI::PresetCount,const char* type=nullptr,bool subtree=false)
+        bool CanQueueVisual(UI::Preset preset)
         {
-            if(!component || applying || !ready.load(std::memory_order_acquire) ||
+            if(applying || !ready.load(std::memory_order_acquire) ||
                 (preset==UI::PresetCount && !watchVisuals.load(std::memory_order_acquire)))return false;
-            const DWORD thread=uiThread.load();if(thread && thread!=GetCurrentThreadId())return false;
+            const DWORD thread=uiThread.load();return !thread || thread==GetCurrentThreadId();
+        }
+        bool QueueVisual(void* component,UI::Preset preset=UI::PresetCount,const char* type=nullptr,bool subtree=false,bool gameObject=false)
+        {
+            if(!component || !CanQueueVisual(preset))return false;
             bool queued=false;
             try{Guard([&]{
                 const int id=Id(component);if(!id)return;
                 std::lock_guard<std::mutex> lock(visualMutex);
                 if(visualEvents.size()>=2048)return;
-                visualEvents.push_back({id,component,preset,type,subtree});haveVisualEvents.store(true,std::memory_order_release);queued=true;
+                visualEvents.push_back({id,component,preset,type,subtree,gameObject});haveVisualEvents.store(true,std::memory_order_release);queued=true;
             });}catch(...){}
             return queued;
         }
@@ -915,8 +927,25 @@ namespace HUD
         {originalGraphicEnable(graphic,method);QueueVisual(graphic);}
         void __fastcall OnGraphicLightActivate(void* graphic,void* method)
         {originalGraphicLightActivate(graphic,method);QueueVisual(graphic);}
+        bool QueueEffectInstance(void* effect)
+        {
+            if(!effect || !CanQueueVisual(UI::PresetCount))return false;
+            bool queued=false;
+            Guard([&]{
+                // Both effect owners store the mounted GameObject at 0x20 in both 7.2 builds.
+                auto* instance=*reinterpret_cast<void**>(static_cast<unsigned char*>(effect)+0x20);
+                queued=QueueVisual(instance,UI::PresetCount,nullptr,true,true);
+            });
+            return queued;
+        }
         void __fastcall OnEffectEnable(void* effect,void* method)
-        {originalEffectEnable(effect,method);QueueVisual(effect,UI::PresetCount,nullptr,true);}
+        {originalEffectEnable(effect,method);if(!QueueEffectInstance(effect))QueueVisual(effect,UI::PresetCount,nullptr,true);}
+        void __fastcall OnEffectSetObject(void* effect,void* prefab,void* method)
+        {originalEffectSetObject(effect,prefab,method);QueueEffectInstance(effect);}
+        void __fastcall OnEffectPlay(void* effect,bool includeChildren,void* method)
+        {originalEffectPlay(effect,includeChildren,method);QueueEffectInstance(effect);}
+        void __fastcall OnFeatureEffectMount(void* effect,void* method)
+        {originalFeatureEffectMount(effect,method);QueueEffectInstance(effect);}
         void __fastcall OnQuestEnable(void* quest,void* method)
         {originalQuestEnable(quest,method);QueueVisual(quest,UI::QuestTracking,"MonoQuestHintText",true);}
         void __fastcall OnQuestTraceTick(void* trace,void* method)
@@ -960,14 +989,16 @@ namespace HUD
             if(!ok){faulted.store(true);ready.store(false);try{RestoreAll();}catch(...){}}
             applying=false;
         }
-        bool Initialize()
+        bool Initialize(const Native::Profile& profile,uintptr_t base)
         {
-            const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));bool compatible=false;
+            bool compatible=false;
             Guard([&]{const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(base);if(dos->e_magic!=IMAGE_DOS_SIGNATURE || dos->e_lfanew<=0 || dos->e_lfanew>0x1000)return;
-                const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);compatible=nt->Signature==IMAGE_NT_SIGNATURE && nt->FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64 && nt->FileHeader.TimeDateStamp==Native::Timestamp && nt->OptionalHeader.SizeOfImage==Native::ImageSize;});
+                const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(base+dos->e_lfanew);
+                compatible=nt->Signature==IMAGE_NT_SIGNATURE && nt->FileHeader.Machine==IMAGE_FILE_MACHINE_AMD64 &&
+                    nt->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC && nt->FileHeader.TimeDateStamp==profile.timestamp && nt->OptionalHeader.SizeOfImage==profile.imageSize;});
             if(!compatible)return false;bool valid=true;
             auto address=[&](const Native::Method& method)->void*{auto* p=reinterpret_cast<void*>(base+method.rva);const bool match=Support::MatchesEntryBytes(p,method.bytes);if(!match)valid=false;return match?p:nullptr;};
-#define LOAD(field,method) api.field=reinterpret_cast<decltype(api.field)>(address(Native::method))
+#define LOAD(field,method) api.field=reinterpret_cast<decltype(api.field)>(address(profile.method))
             LOAD(stringNew,StringNew);LOAD(find,FindObject);LOAD(transform,ObjectTransform);LOAD(owner,ComponentObject);LOAD(parent,Parent);LOAD(name,Name);
             LOAD(id,InstanceId);LOAD(resolve,FromId);LOAD(count,ChildCount);LOAD(component,ComponentByName);LOAD(childPath,FindTransform);LOAD(child,Child);LOAD(active,ActiveSelf);
             LOAD(rendererEnabled,ReadRendererEnabled);LOAD(setRendererEnabled,SetRendererEnabled);LOAD(scale,ReadScale);LOAD(local,ReadLocalPosition);LOAD(setScale,SetScale);
@@ -975,22 +1006,25 @@ namespace HUD
             LOAD(maskDirty,MaskSetParamsDirty);LOAD(maskRebuild,MaskRebuild);
             LOAD(rectClip,RectMaskPerformClipping);
 #undef LOAD
-            api.color=reinterpret_cast<ColorGet>(address(Native::ReadCanvasColor));api.setAlpha=reinterpret_cast<FloatSet>(address(Native::SetCanvasAlpha));
-            api.setLocal=reinterpret_cast<V3Set>(address(Native::SetLocalPosition));auto* target=address(Native::WillRender);auto* awake=address(Native::MainAwake);
+            api.color=reinterpret_cast<ColorGet>(address(profile.ReadCanvasColor));api.setAlpha=reinterpret_cast<FloatSet>(address(profile.SetCanvasAlpha));
+            api.setLocal=reinterpret_cast<V3Set>(address(profile.SetLocalPosition));auto* target=address(profile.WillRender);auto* awake=address(profile.MainAwake);
             struct Hook {void* target;void* callback;void** original;};
             const Hook hooks[]={
                 {target,reinterpret_cast<void*>(&OnRender),reinterpret_cast<void**>(&originalRender)},
                 {awake,reinterpret_cast<void*>(&OnAwake),reinterpret_cast<void**>(&originalAwake)},
-                {address(Native::GraphicEnable),reinterpret_cast<void*>(&OnGraphicEnable),reinterpret_cast<void**>(&originalGraphicEnable)},
-                {address(Native::GraphicLightActivate),reinterpret_cast<void*>(&OnGraphicLightActivate),reinterpret_cast<void**>(&originalGraphicLightActivate)},
-                {address(Native::EffectEnable),reinterpret_cast<void*>(&OnEffectEnable),reinterpret_cast<void**>(&originalEffectEnable)},
-                {address(Native::QuestEnable),reinterpret_cast<void*>(&OnQuestEnable),reinterpret_cast<void**>(&originalQuestEnable)},
-                {address(Native::QuestTraceTick),reinterpret_cast<void*>(&OnQuestTraceTick),reinterpret_cast<void**>(&originalQuestTraceTick)},
-                {address(Native::InteeDialogAdd),reinterpret_cast<void*>(&OnDialogAdd),reinterpret_cast<void**>(&originalDialogAdd)},
-                {address(Native::InteePickupAdd),reinterpret_cast<void*>(&OnPickupAdd),reinterpret_cast<void**>(&originalPickupAdd)},
-                {address(Native::InteeKeyRefresh),reinterpret_cast<void*>(&OnInteeKeyRefresh),reinterpret_cast<void**>(&originalInteeKeyRefresh)},
-                {address(Native::InteeSwitchKeyRefresh),reinterpret_cast<void*>(&OnInteeSwitchKeyRefresh),reinterpret_cast<void**>(&originalInteeSwitchKeyRefresh)},
-                {address(Native::PrefabInstance),reinterpret_cast<void*>(&OnPrefabInstance),reinterpret_cast<void**>(&originalPrefabInstance)}
+                {address(profile.GraphicEnable),reinterpret_cast<void*>(&OnGraphicEnable),reinterpret_cast<void**>(&originalGraphicEnable)},
+                {address(profile.GraphicLightActivate),reinterpret_cast<void*>(&OnGraphicLightActivate),reinterpret_cast<void**>(&originalGraphicLightActivate)},
+                {address(profile.EffectEnable),reinterpret_cast<void*>(&OnEffectEnable),reinterpret_cast<void**>(&originalEffectEnable)},
+                {address(profile.EffectSetObject),reinterpret_cast<void*>(&OnEffectSetObject),reinterpret_cast<void**>(&originalEffectSetObject)},
+                {address(profile.EffectPlay),reinterpret_cast<void*>(&OnEffectPlay),reinterpret_cast<void**>(&originalEffectPlay)},
+                {address(profile.FeatureEffectMount),reinterpret_cast<void*>(&OnFeatureEffectMount),reinterpret_cast<void**>(&originalFeatureEffectMount)},
+                {address(profile.QuestEnable),reinterpret_cast<void*>(&OnQuestEnable),reinterpret_cast<void**>(&originalQuestEnable)},
+                {address(profile.QuestTraceTick),reinterpret_cast<void*>(&OnQuestTraceTick),reinterpret_cast<void**>(&originalQuestTraceTick)},
+                {address(profile.InteeDialogAdd),reinterpret_cast<void*>(&OnDialogAdd),reinterpret_cast<void**>(&originalDialogAdd)},
+                {address(profile.InteePickupAdd),reinterpret_cast<void*>(&OnPickupAdd),reinterpret_cast<void**>(&originalPickupAdd)},
+                {address(profile.InteeKeyRefresh),reinterpret_cast<void*>(&OnInteeKeyRefresh),reinterpret_cast<void**>(&originalInteeKeyRefresh)},
+                {address(profile.InteeSwitchKeyRefresh),reinterpret_cast<void*>(&OnInteeSwitchKeyRefresh),reinterpret_cast<void**>(&originalInteeSwitchKeyRefresh)},
+                {address(profile.PrefabInstance),reinterpret_cast<void*>(&OnPrefabInstance),reinterpret_cast<void**>(&originalPrefabInstance)}
             };
             if(!valid)return false;Support::HookSetupGuard setup;if(!setup || MH_Initialize()!=MH_OK)return false;
             auto rollback=[&]{for(const auto& hook:hooks){MH_DisableHook(hook.target);MH_RemoveHook(hook.target);}};
@@ -1010,9 +1044,10 @@ namespace HUD
         }
     }
     void Publish(std::shared_ptr<const UI::Settings> value){std::atomic_store_explicit(&pending,std::move(value),std::memory_order_release);}
-    void Run()
+    void Run(const Native::Profile& profile)
     {
-        const auto directory=Support::PluginDirectory();if(directory.empty())return;Reload();if(!Initialize())return;
+        const auto directory=Support::PluginDirectory();if(directory.empty())return;Reload();
+        if(!Initialize(profile,reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))))return;
         const auto notification=FindFirstChangeNotificationW(directory.c_str(),FALSE,FILE_NOTIFY_CHANGE_LAST_WRITE|FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_SIZE);
         bool restoreHeld=false,dumpHeld=false,reloadPending=false;uint64_t reloadAfter=0;
         for(;;)

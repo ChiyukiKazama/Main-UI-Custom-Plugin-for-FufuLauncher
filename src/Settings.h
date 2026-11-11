@@ -10,12 +10,14 @@ namespace UI
     inline constexpr const char* MainPagePath = "/Canvas/Pages/InLevelMainPage";
     enum Preset { AllMainUi, MiniMap, Team, QuestTracking, SkillControls, ChatButton, TopLeftButtons, TopRightButtons,
         Paimon, Activities, Bag, Character, Gacha, BattlePass, Handbook, Coop,
-        PlayerHealthStatus, Interaction, Ping, MiliastraEntrance, ElementalSight, ChatPanel, QuestButton, SnezhnayaIcon, PresetCount };
+        PlayerHealthStatus, Interaction, Ping, MiliastraEntrance, ElementalSight, ChatPanel, QuestButton, SnezhnayaIcon,
+        TutorialEntry, PresetCount };
     inline constexpr const char* PresetConfigKeys[] = {"HideAll", "HideMiniMap", "HideTeam", "HideQuestTrack",
         "HideSkillPanel", "HideChatButton", "HideTopButtons", "HideMainButtons", "HidePaimon",
         "HideActivities", "HideBag", "HideCharacter", "HideGacha", "HideBattlePass",
         "HideHandbook", "HideCoop", "HideHealthBar", "HideInteraction", "HidePing",
-        "HideMiliastraEntrance", "HideElementalSight", "HideChatPanel", "HideQuestButton", "HideSnezhnayaIcon"};
+        "HideMiliastraEntrance", "HideElementalSight", "HideChatPanel", "HideQuestButton", "HideSnezhnayaIcon",
+        "HideTutorialEntry"};
     static_assert(sizeof(PresetConfigKeys) / sizeof(PresetConfigKeys[0]) == PresetCount);
     struct Settings
     {

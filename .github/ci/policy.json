@@ -2,5 +2,5 @@
   "upxVersion": "5.0.2",
   "upxUrl": "https://github.com/upx/upx/releases/download/v5.0.2/upx-5.0.2-win64.zip",
   "upxSHA256": "1cff6d6ee01c404d4a1ae56003056bd4cfa28d0a5cea1d0950daaf872a4facc9",
-  "safeLoadSourcesSHA256": "fea812f2ccaa1c2ecde1468c4a25b2bc36b4af670ab97fc7f0bd798f2e4b3067"
+  "safeLoadSourcesSHA256": "c066c05eb1f24f6886d4583a69c7f3a93df41e344bf24de1208665beab8d5687"
 }

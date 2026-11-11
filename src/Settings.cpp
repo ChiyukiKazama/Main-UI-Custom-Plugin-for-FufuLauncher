@@ -56,7 +56,8 @@ namespace UI
         std::vector<Preset> parents;
         if (preset == AllMainUi) return parents;
         parents.push_back(AllMainUi);
-        if (preset == Paimon || preset == Coop || preset == ElementalSight || preset == QuestButton || preset == SnezhnayaIcon)
+        if (preset == Paimon || preset == Coop || preset == ElementalSight || preset == QuestButton ||
+            preset == SnezhnayaIcon || preset == TutorialEntry)
             parents.push_back(TopLeftButtons);
         if (preset == Activities || preset == Bag || preset == Character || preset == Gacha ||
             preset == BattlePass || preset == Handbook || preset == MiliastraEntrance)

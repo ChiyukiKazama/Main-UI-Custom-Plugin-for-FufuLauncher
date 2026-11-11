@@ -17,7 +17,8 @@ namespace HUD
     {
         switch(preset)
         {
-        case UI::MiniMap:case UI::TopLeftButtons:case UI::Paimon:case UI::Coop:case UI::QuestButton:case UI::SnezhnayaIcon:case UI::ElementalSight:return Left|Top;
+        case UI::MiniMap:case UI::TopLeftButtons:case UI::Paimon:case UI::Coop:case UI::QuestButton:
+        case UI::SnezhnayaIcon:case UI::ElementalSight:case UI::TutorialEntry:return Left|Top;
         case UI::TopRightButtons:case UI::Activities:case UI::Bag:case UI::Character:case UI::Gacha:case UI::BattlePass:case UI::Handbook:case UI::MiliastraEntrance:case UI::Ping:return Right|Top;
         case UI::Team:return Right;
         case UI::SkillControls:return Right|Bottom;
@@ -29,6 +30,7 @@ namespace HUD
     }
     const std::vector<Binding>& Bindings()
     {
+        // The referenced MonoInLevelMainPage fields have the same offsets in both 7.2 builds.
         static const std::vector<Binding> values={
             {UI::MiniMap,0x78,false},{UI::Team,0x70,false},{UI::QuestTracking,0x2E0,false},{UI::SkillControls,0x2D8,false},
             {UI::QuestTracking,0x490,false,nullptr,"SimpleText"},{UI::QuestTracking,0x1D0,false,nullptr,"MonoReturnToQuestBtn"},
@@ -36,7 +38,7 @@ namespace HUD
             {UI::ChatPanel,0x3B8,true,"Content/ScrollView"},{UI::ChatPanel,0x3B8,true,"Content/ImgBg"},
             {UI::TopLeftButtons,0x88,true},{UI::TopLeftButtons,0x80,true,"GrpFactor"},{UI::TopLeftButtons,0x80,true,"GrpFactorContainer"},
             {UI::TopLeftButtons,0x80,true,"BtnToggle"},{UI::TopLeftButtons,0x130,false},{UI::TopLeftButtons,0x398,false},{UI::TopLeftButtons,0x80,true,"BtnClock"},
-            {UI::TopRightButtons,0x98,true},{UI::Paimon,0x110,false},{UI::Activities,0x108,false},{UI::Activities,0x1A0,false},
+            {UI::Paimon,0x110,false},{UI::Activities,0x108,false},{UI::Activities,0x1A0,false},
             {UI::Bag,0xF0,false},{UI::Character,0xE0,false},{UI::Gacha,0xF8,false},{UI::BattlePass,0x1B0,false},
             {UI::Handbook,0x188,false},{UI::Handbook,0x190,false},{UI::Coop,0xB8,false},
             {UI::PlayerHealthStatus,0x48,false,"HPBarContainer"},{UI::PlayerHealthStatus,0x48,false,"HPBarCustomLevelContainer"},
@@ -56,6 +58,8 @@ namespace HUD
             {"GrpMainPage/MapInfo/BtnClock",UI::TopLeftButtons,Left|Top},
             {"GrpMainPage/MapInfo/BtnExitDungeon",UI::TopLeftButtons,Left|Top},
             {"GrpMainPage/MapInfo/BtnFeedback",UI::TopLeftButtons,Left|Top},
+            {"GrpMainPage/MapInfo/GrpButtons/BtnGuide",UI::TutorialEntry,Left|Top},
+            {"GrpMainPage/MessagePush/MessageContainer/MessageTutorial(Clone)",UI::TutorialEntry,Left|Top},
             {"GrpMainPage/MapInfo/BtnToggleQuest",UI::QuestButton,Left|Top},
             {"GrpMainPage/MapInfo/GrpButtons/BtnTogglePlayerList",UI::Coop,Left|Top},
             {"GrpMainPage/MapInfo/GrpButtons/BtnElemView",UI::ElementalSight,Left|Top},
