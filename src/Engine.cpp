@@ -5,6 +5,7 @@
 #include "Native.h"
 #include "Support.h"
 #include "HookSetupGuard.h"
+#include "HotkeyInput.h"
 #include <MinHook.h>
 #include <algorithm>
 #include <atomic>
@@ -70,7 +71,10 @@ namespace HUD
         std::atomic<bool> watchVisuals{false},haveVisualEvents{false};
         std::atomic<int> pendingPage{0};
         std::atomic<unsigned> commands{0};
-        bool restored=false;
+        std::atomic<bool> holdRestoreDown{false};
+        bool restoreToggled=false,restored=false;
+        constexpr uint32_t KeyHintsMask=uint32_t{1}<<UI::KeyHints;
+        constexpr uint32_t KeyHintAreas=(uint32_t{1}<<UI::Team)|(uint32_t{1}<<UI::SkillControls);
         constexpr const char* QuestHintTypes[]={"MonoQuestTrace","MonoQuestHintText","MonoQuestHintActiveController",
             "MonoProgressGuideHint","MonoProgressGuideListedHint","MonoNearbyTrackableQuestHint","MonoHandbookQuestGuideHint","MonoReturnToQuestBtn"};
         thread_local bool applying=false;
@@ -97,6 +101,7 @@ namespace HUD
         std::unordered_map<int,Matrix> matrices;
         std::unordered_map<int,Record*> layoutByTransform;
         std::unordered_set<int> invalidMatrices;
+        struct KeyHintState {void* teamPcGroup=nullptr;bool isHint=false;};
         struct Node
         {
             int transform=0,object=0,graphic=0,children=-1;
@@ -104,6 +109,7 @@ namespace HUD
             void* graphicToken=nullptr;
             std::string path;
             Match match;
+            KeyHintState keyHint;
             std::vector<std::pair<int,int>> chain;
             bool forbidden=false;
         };
@@ -135,6 +141,29 @@ namespace HUD
         }
         void* Component(void* object,const char* type)
         {if(!object)return nullptr;auto* text=api.stringNew(type);return text?api.component(object,text,nullptr):nullptr;}
+        KeyHintState FindKeyHint(int transformId, std::string_view path, std::string_view area)
+        {
+            if(!transformId || path==area)return {};
+            const int parentId=Parent(transformId);
+            const auto parentPath=path.substr(0,path.rfind('/'));
+            const auto parent=nodes.find(parentId);
+            auto state=parent!=nodes.end() && parent->second.path==parentPath
+                ?parent->second.keyHint:FindKeyHint(parentId,parentPath,area);
+            if(state.isHint)return state;
+
+            auto* transform=Resolve(transformId);
+            if(!transform)return state;
+            auto* object=api.owner(transform,nullptr);
+            state.isHint=transform==state.teamPcGroup || Component(object,"MonoControlElement")!=nullptr;
+            if(!state.isHint && !state.teamPcGroup && area==TeamHudPath)
+            {
+                // MonoTeamBtn serializes its keyboard number separately from the controller hint.
+                constexpr size_t pcKeyGroupOffset=0x150;
+                if(auto* row=static_cast<unsigned char*>(Component(object,"MonoTeamBtn")))
+                    state.teamPcGroup=*reinterpret_cast<void**>(row+pcKeyGroupOffset);
+            }
+            return state;
+        }
         std::string Name(void* object)
         {
             auto* s=static_cast<const unsigned char*>(api.name(object,nullptr));if(!s)return {};
@@ -251,6 +280,7 @@ namespace HUD
             if((settings->marginLeft && (region.edges&Left)) || (settings->marginRight && (region.edges&Right)) ||
                 (settings->marginTop && (region.edges&Top)) || (settings->marginBottom && (region.edges&Bottom)))return true;
             if(effectiveMask&(uint32_t{1}<<region.preset))return true;
+            if((effectiveMask&KeyHintsMask) && ((uint32_t{1}<<region.preset)&KeyHintAreas))return true;
             const auto absolute=std::string(UI::MainPagePath)+"/"+region.path;
             for(const auto& path:settings->hiddenPaths)if(Within(path,absolute) || Within(absolute,path))return true;
             return false;
@@ -344,10 +374,16 @@ namespace HUD
             }
             if(changed)
             {
-                for(auto& pair:nodes)pair.second.match=Classify(pair.second.path,regions);
+                for(auto& pair:nodes)
+                {
+                    auto& node=pair.second;
+                    node.match=Classify(node.path,regions);
+                    if(node.keyHint.isHint)node.match.presets|=KeyHintsMask;
+                }
                 for(auto& pair:records)
                 {
                     auto& r=pair.second;if(r.layoutRoot)continue;auto match=Classify(r.path,regions);
+                    match.presets|=r.match.presets&KeyHintsMask;
                     if(match.presets!=r.match.presets || match.edges!=r.match.edges || match.unit!=r.match.unit)added.insert(r.id);
                     r.match=std::move(match);
                 }
@@ -380,6 +416,12 @@ namespace HUD
                 for(unsigned depth=0;current && current!=anchorTransformId && depth<48;++depth)
                 {const int parent=Parent(current);node.chain.push_back({current,parent});current=parent;}
                 if(current!=anchorTransformId)continue;
+                if(node.match.presets&KeyHintAreas)
+                {
+                    const auto area=(node.match.presets&(uint32_t{1}<<UI::Team))?TeamHudPath:SkillHudPath;
+                    node.keyHint=FindKeyHint(transformId,item.path,area);
+                    if(node.keyHint.isHint)node.match.presets|=KeyHintsMask;
+                }
                 nodes[transformId]=std::move(node);const auto& cached=nodes.at(transformId);
                 if(cached.forbidden || !cached.match.presets)continue;
                 auto* graphic=Component(object,"Graphic");auto* canvas=graphic?Component(object,"CanvasRenderer"):nullptr;
@@ -421,6 +463,8 @@ namespace HUD
                         r.rectMask=Id(rectMask);r.rectMaskToken=rectMask;
                         records[id]=std::move(r);added.insert(id);
                     }
+                    else if(old->second.match.presets!=cached.match.presets)
+                    {old->second.match=cached.match;added.insert(id);}
                 }
                 // Keep each complete row together. The enclosing container is
                 // animated independently, so it must retain its native position.
@@ -782,8 +826,6 @@ namespace HUD
             }
             RefreshMasks();
         }
-        bool Key(int key,bool& held)
-        {DWORD pid=0;GetWindowThreadProcessId(GetForegroundWindow(),&pid);const bool down=key && pid==GetCurrentProcessId() && (GetAsyncKeyState(key)&0x8000);const bool pressed=down && !held;held=down;return pressed;}
         void Export()
         {
             std::ofstream file(Support::PluginDirectory()/L"ui-tree.txt",std::ios::binary|std::ios::trunc);if(!file)return;
@@ -807,7 +849,7 @@ namespace HUD
                 {
                     file<<"\tid="<<transform<<"\tcomponents=";
                     for(const char* type:{"Image","RawImage","Text","SimpleText","SmoothMask","Mask","RectMask2D","Selectable","EventTrigger","ScrollRect",
-                        "MonoActionBtn","MonoBaseSkillBtn","MonoTeamButtonContainer","Animator","ContentSizeFitter","HorizontalLayoutGroup","VerticalLayoutGroup","LayoutElement"})
+                        "MonoActionBtn","MonoBaseSkillBtn","MonoTeamButtonContainer","MonoTeamBtn","MonoControlElement","Animator","ContentSizeFitter","HorizontalLayoutGroup","VerticalLayoutGroup","LayoutElement"})
                         if(Component(object,type))file<<type<<',';
                     if(!item.scopePath.empty())file<<"\tscope="<<item.scopePath;
                     V3 local{},scale{};api.local(item.transform,&local,nullptr);api.scale(item.transform,&scale,nullptr);
@@ -855,12 +897,15 @@ namespace HUD
             std::vector<VisualEvent> events;
             if(haveVisualEvents.load(std::memory_order_acquire))
             {std::lock_guard<std::mutex> lock(visualMutex);events.swap(visualEvents);haveVisualEvents.store(false,std::memory_order_release);}
-            if(next==settings && !captured && !command && events.empty())return;
+            if(command&1)restoreToggled=!restoreToggled;
+            const bool nextRestored=restoreToggled || holdRestoreDown.load(std::memory_order_acquire);
+            const bool restoreChanged=nextRestored!=restored;
+            if(next==settings && !captured && !command && !restoreChanged && events.empty())return;
+            restored=nextRestored;
             const auto previous=settings;settings=next;
-            if(previous && SameUi(*previous,*settings) && !captured && !command && events.empty())return;
+            if(previous && SameUi(*previous,*settings) && !captured && !command && !restoreChanged && events.empty())return;
             ClearFrame();visibilityDirty.clear();layoutDirty.clear();added.clear();
-            bool force=!previous || captured!=0;
-            if(command&1){restored=!restored;force=true;}
+            bool force=!previous || captured!=0 || restoreChanged;
             effectiveMask=HiddenMask(*settings);
             watchVisuals.store(Demand(),std::memory_order_release);
             bool replaced=false;
@@ -1040,7 +1085,9 @@ namespace HUD
             if(!file.bad() && text==acceptedConfig)return true;
             if(file.bad() || text.size()>262144 || !UI::ParseSettings(text,next,error))return false;
             const auto current=std::atomic_load_explicit(&pending,std::memory_order_acquire);
-            if(!SameUi(*current,next) || current->restoreHotkey!=next.restoreHotkey || current->exportHotkey!=next.exportHotkey)Publish(std::make_shared<const UI::Settings>(std::move(next)));
+            if(!SameUi(*current,next) || current->restoreHotkey!=next.restoreHotkey ||
+                current->exportHotkey!=next.exportHotkey || current->holdRestoreHotkey!=next.holdRestoreHotkey)
+                Publish(std::make_shared<const UI::Settings>(std::move(next)));
             acceptedConfig=std::move(text);return true;
         }
     }
@@ -1049,19 +1096,48 @@ namespace HUD
     {
         const auto directory=Support::PluginDirectory();if(directory.empty())return;Reload();
         if(!Initialize(profile,reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))))return;
-        const auto notification=FindFirstChangeNotificationW(directory.c_str(),FALSE,FILE_NOTIFY_CHANGE_LAST_WRITE|FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_SIZE);
+        auto notification=FindFirstChangeNotificationW(directory.c_str(),FALSE,FILE_NOTIFY_CHANGE_LAST_WRITE|FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_SIZE);
         bool restoreHeld=false,dumpHeld=false,reloadPending=false;uint64_t reloadAfter=0;
+        std::array<uint64_t,XUSER_MAX_COUNT> retryPadAt{};
         for(;;)
         {
-            if(notification!=INVALID_HANDLE_VALUE && WaitForSingleObject(notification,50)==WAIT_OBJECT_0)
-            {if(!FindNextChangeNotification(notification))break;reloadPending=true;reloadAfter=GetTickCount64()+50;}
-            else if(notification==INVALID_HANDLE_VALUE)Sleep(50);
+            if(notification==INVALID_HANDLE_VALUE)Sleep(16);
+            else
+            {
+                const auto event=WaitForSingleObject(notification,16);
+                if(event==WAIT_OBJECT_0)
+                {reloadPending=true;reloadAfter=GetTickCount64()+50;}
+                if(event==WAIT_FAILED || (event==WAIT_OBJECT_0 && !FindNextChangeNotification(notification)))
+                {FindCloseChangeNotification(notification);notification=INVALID_HANDLE_VALUE;}
+            }
             if(reloadPending && GetTickCount64()>=reloadAfter){reloadPending=false;Reload();}
             const auto keys=std::atomic_load_explicit(&pending,std::memory_order_acquire);
-            if(Key(keys->restoreHotkey,restoreHeld))commands.fetch_or(1,std::memory_order_release);
-            if(Key(keys->exportHotkey,dumpHeld))commands.fetch_or(2,std::memory_order_release);
+            DWORD foregroundPid=0;
+            GetWindowThreadProcessId(GetForegroundWindow(),&foregroundPid);
+            const bool foreground=foregroundPid==GetCurrentProcessId();
+            std::array<XINPUT_GAMEPAD,XUSER_MAX_COUNT> pads{};
+            if(foreground && (IsGamepadKey(keys->restoreHotkey) || IsGamepadKey(keys->exportHotkey) || IsGamepadKey(keys->holdRestoreHotkey)))
+            {
+                const auto now=GetTickCount64();
+                for(DWORD i=0;i<XUSER_MAX_COUNT;++i)
+                {
+                    if(now<retryPadAt[i])continue;
+                    XINPUT_STATE state{};
+                    if(XInputGetState(i,&state)==ERROR_SUCCESS)pads[i]=state.Gamepad;
+                    else retryPadAt[i]=now+1000;
+                }
+            }
+            auto down=[&](int key){
+                if(!foreground || !key)return false;
+                if(IsGamepadKey(key))return std::any_of(pads.begin(),pads.end(),[&](const auto& pad){return GamepadKeyDown(key,pad);});
+                return (GetAsyncKeyState(key)&0x8000)!=0;
+            };
+            const bool restoreDown=down(keys->restoreHotkey),dumpDown=down(keys->exportHotkey);
+            holdRestoreDown.store(down(keys->holdRestoreHotkey),std::memory_order_release);
+            if(restoreDown && !restoreHeld)commands.fetch_or(1,std::memory_order_release);
+            if(dumpDown && !dumpHeld)commands.fetch_or(2,std::memory_order_release);
+            restoreHeld=restoreDown;dumpHeld=dumpDown;
         }
-        if(notification!=INVALID_HANDLE_VALUE)FindCloseChangeNotification(notification);
     }
 
 }

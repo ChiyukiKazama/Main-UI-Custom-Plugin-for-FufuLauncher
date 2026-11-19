@@ -5,6 +5,8 @@
 #include <vector>
 namespace HUD
 {
+    inline constexpr char TeamHudPath[]="GrpMainPage/TeamBtnContainer";
+    inline constexpr char SkillHudPath[]="GrpMainPage/ActionPanelContainer";
     enum Edge : unsigned { Left=1,Right=2,Top=4,Bottom=8 };
     struct Binding { UI::Preset preset; size_t offset; bool gameObject; const char* child=nullptr; const char* type=nullptr; };
     struct Region { std::string path; UI::Preset preset; unsigned edges=0; int object=0,transform=0; void* token=nullptr; int source=0; void* sourceToken=nullptr; };

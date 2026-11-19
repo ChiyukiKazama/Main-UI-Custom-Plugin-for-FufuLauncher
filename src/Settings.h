@@ -11,21 +11,20 @@ namespace UI
     enum Preset { AllMainUi, MiniMap, Team, QuestTracking, SkillControls, ChatButton, TopLeftButtons, TopRightButtons,
         Paimon, Activities, Bag, Character, Gacha, BattlePass, Handbook, Coop,
         PlayerHealthStatus, Interaction, Ping, MiliastraEntrance, ElementalSight, ChatPanel, QuestButton, SnezhnayaIcon,
-        TutorialEntry, PresetCount };
+        TutorialEntry, KeyHints, PresetCount };
     inline constexpr const char* PresetConfigKeys[] = {"HideAll", "HideMiniMap", "HideTeam", "HideQuestTrack",
         "HideSkillPanel", "HideChatButton", "HideTopButtons", "HideMainButtons", "HidePaimon",
         "HideActivities", "HideBag", "HideCharacter", "HideGacha", "HideBattlePass",
         "HideHandbook", "HideCoop", "HideHealthBar", "HideInteraction", "HidePing",
         "HideMiliastraEntrance", "HideElementalSight", "HideChatPanel", "HideQuestButton", "HideSnezhnayaIcon",
-        "HideTutorialEntry"};
+        "HideTutorialEntry", "HideKeyHints"};
     static_assert(sizeof(PresetConfigKeys) / sizeof(PresetConfigKeys[0]) == PresetCount);
     struct Settings
     {
         float scale = 1;
         bool alignRightButtons = false;
         float marginLeft = 0, marginRight = 0, marginTop = 0, marginBottom = 0;
-        // Shipped defaults come from config.ini; omitted shortcuts stay disabled.
-        int restoreHotkey = 0, exportHotkey = 0;
+        int restoreHotkey = 0, exportHotkey = 0, holdRestoreHotkey = 0;
         std::array<bool, PresetCount> hiddenPresets{};
         std::vector<std::string> hiddenPaths;
     };

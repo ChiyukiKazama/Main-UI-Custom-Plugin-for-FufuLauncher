@@ -1,4 +1,5 @@
 #include "Settings.h"
+#include <Windows.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -34,6 +35,10 @@ namespace UI
                 if (!TrimWhitespace(text.substr(used)).empty() || n < 0 || n > 254) return false;
                 value = n; return true; } catch (...) { return false; }
         }
+        bool IsAlt(int key)
+        { return key == VK_MENU || key == VK_LMENU || key == VK_RMENU; }
+        bool HoldKeyConflicts(int hold, int other)
+        { return hold != 0 && (hold == other || ((hold == VK_MENU || other == VK_MENU) && IsAlt(hold) && IsAlt(other))); }
     }
     bool NormalizeMainUiPath(const std::string& text, std::string& result)
     {
@@ -110,6 +115,7 @@ namespace UI
             else if (key == "marginbottom") valid=ParseFloatInRange(value,next.marginBottom,-4000,4000);
             else if (key == "togglekey") valid = ParseVirtualKey(value, next.restoreHotkey);
             else if (key == "dumpkey") valid = ParseVirtualKey(value, next.exportHotkey);
+            else if (key == "holdrestorekey") valid = ParseVirtualKey(value, next.holdRestoreHotkey);
             else if (key == "hiddenpaths")
             {
                 std::istringstream paths(pair.second);
@@ -134,6 +140,14 @@ namespace UI
         // Empty/metadata-only snapshots may be partial file replacements.
         if (!hasKnownSetting) { error = "Configuration contains no recognized settings; retaining the previous snapshot."; return false; }
         if (next.restoreHotkey && next.restoreHotkey == next.exportHotkey) { error = "ToggleKey and DumpKey must differ."; return false; }
+        if (!values.count("holdrestorekey"))
+        {
+            // Keep an existing Alt shortcut usable when upgrading an older INI.
+            if (!IsAlt(next.restoreHotkey) && !IsAlt(next.exportHotkey)) next.holdRestoreHotkey = VK_MENU;
+        }
+        else if (HoldKeyConflicts(next.holdRestoreHotkey, next.restoreHotkey) ||
+                 HoldKeyConflicts(next.holdRestoreHotkey, next.exportHotkey))
+        { error = "HoldRestoreKey must differ from ToggleKey and DumpKey."; return false; }
         std::sort(next.hiddenPaths.begin(), next.hiddenPaths.end());
         result = std::move(next);
         error.clear();
