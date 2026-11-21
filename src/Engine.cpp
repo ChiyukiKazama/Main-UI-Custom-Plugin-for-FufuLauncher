@@ -9,12 +9,14 @@
 #include <MinHook.h>
 #include <algorithm>
 #include <atomic>
+#include <deque>
 #include <fstream>
 #include <iterator>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace HUD
 {
@@ -66,14 +68,21 @@ namespace HUD
         AddOptionFn originalDialogAdd=nullptr,originalPickupAdd=nullptr;
         PrefabFn originalPrefabInstance=nullptr;
         struct VisualEvent {int id;void* token;UI::Preset preset;const char* type=nullptr;bool subtree=false,gameObject=false;};
+        struct QuestProbe {int object=0,transform=0;void* token=nullptr;};
+        struct QuestProbeResult {QuestProbe probe;int source=0;void* sourceToken=nullptr;};
+        constexpr size_t VisualEventLimit=2048,QuestProbeBudget=4;
+        std::deque<QuestProbe> pendingQuestProbes;
+        std::unordered_map<int,void*> queuedQuestProbes;
+        std::array<QuestProbeResult,4096> checkedQuestProbes{};
         std::mutex visualMutex;
         std::vector<VisualEvent> visualEvents;
         std::atomic<bool> watchVisuals{false},haveVisualEvents{false};
         std::atomic<int> pendingPage{0};
         std::atomic<unsigned> commands{0};
         std::atomic<bool> holdRestoreDown{false};
-        bool restoreToggled=false,restored=false;
+        bool restoreToggled=false,restored=false,scopedLayoutsChanged=false;
         constexpr uint32_t KeyHintsMask=uint32_t{1}<<UI::KeyHints;
+        constexpr uint32_t QuestTrackingMask=uint32_t{1}<<UI::QuestTracking;
         constexpr uint32_t KeyHintAreas=(uint32_t{1}<<UI::Team)|(uint32_t{1}<<UI::SkillControls);
         constexpr const char* QuestHintTypes[]={"MonoQuestTrace","MonoQuestHintText","MonoQuestHintActiveController",
             "MonoProgressGuideHint","MonoProgressGuideListedHint","MonoNearbyTrackableQuestHint","MonoHandbookQuestGuideHint","MonoReturnToQuestBtn"};
@@ -86,13 +95,14 @@ namespace HUD
         struct Record
         {
             int id=0,object=0,transform=0,graphic=0,anchor=0,anchorTransform=0,smoothMask=0,rectMask=0;
+            int layoutSource=0;
             std::string path,kind,scopePath;Match match;
             std::vector<std::pair<int,int>> chain;
             bool renderer=false,rect=false,rectKnown=false,layoutTarget=false,layoutOnly=false,layoutRoot=false,marginRoot=false,scaleRoot=false,applyScale=false;
             bool alphaChanged=false,rendererChanged=false;
             float alpha=1;bool enabled=true;
             Layout layout;V3 local{};V2 currentPosition{},canvasShift{};float factor=1;
-            void* token=nullptr;void* graphicToken=nullptr;void* smoothMaskToken=nullptr;void* rectMaskToken=nullptr;
+            void* token=nullptr;void* graphicToken=nullptr;void* smoothMaskToken=nullptr;void* rectMaskToken=nullptr;void* layoutSourceToken=nullptr;
         };
         std::unordered_map<int,Record> records;
         std::unordered_map<int,void*> resolved;
@@ -298,6 +308,7 @@ namespace HUD
         void ResetCache()
         {
             RestoreAll();layoutIds.clear();layoutPaths.clear();records.clear();nodes.clear();covered.clear();attempted.clear();unitBindings.clear();
+            pendingQuestProbes.clear();queuedQuestProbes.clear();checkedQuestProbes.fill({});
             regions.clear();boundFields.clear();visibilityDirty.clear();layoutDirty.clear();added.clear();ClearFrame();
         }
         bool DiscoverRoot(int captured,bool& replaced)
@@ -316,6 +327,31 @@ namespace HUD
         }
         bool KnownRegionSource(int id,void* token,UI::Preset preset)
         {return std::any_of(regions.begin(),regions.end(),[&](const Region& r){return r.source==id && r.sourceToken==token && r.preset==preset;});}
+        void ReclassifyCachedRegions(const std::string* branch=nullptr)
+        {
+            const auto reclassify=[](const std::string& path,uint32_t presets)
+            {
+                auto match=Classify(path,regions);
+                // Key hints are identified from components during discovery.
+                if(match.presets&KeyHintAreas)match.presets|=presets&KeyHintsMask;
+                return match;
+            };
+            for(auto& pair:nodes)
+            {
+                auto& node=pair.second;
+                if(branch && !Within(node.path,*branch))continue;
+                node.match=reclassify(node.path,node.match.presets);
+            }
+            for(auto& pair:records)
+            {
+                auto& r=pair.second;
+                if(r.layoutRoot || (branch && !Within(r.path,*branch)))continue;
+                auto match=reclassify(r.path,r.match.presets);
+                if(match.presets!=r.match.presets || match.edges!=r.match.edges || match.unit!=r.match.unit)
+                    added.insert(r.id);
+                r.match=std::move(match);
+            }
+        }
         bool RegisterTypedRegion(void* component,UI::Preset preset,const char* hintType=nullptr)
         {
             if(!component)return false;
@@ -334,6 +370,7 @@ namespace HUD
                 auto* canvas=Find("/Canvas");auto* canvasTransform=canvas?api.transform(canvas,nullptr):nullptr;
                 if(!canvasTransform || Path(transform,canvasTransform).empty())return false;
                 region.object=Id(object);region.transform=Id(transform);region.token=object;
+                region.canvasTransform=Id(canvasTransform);
                 region.path=std::string("GrpMainPage/@")+type+"/"+std::to_string(region.object);
             }
             if(!ValidRegion(region.path,preset))return false;
@@ -344,9 +381,7 @@ namespace HUD
             {
                 if(regions.size()>=256)return false;
                 regions.push_back(std::move(region));
-                for(auto& pair:nodes)pair.second.match=Classify(pair.second.path,regions);
-                for(auto& pair:records)if(!pair.second.layoutRoot)
-                {auto& r=pair.second;r.match=Classify(r.path,regions);added.insert(r.id);}
+                ReclassifyCachedRegions(&regions.back().path);
             }
             return true;
         }
@@ -372,22 +407,7 @@ namespace HUD
                 if(std::none_of(regions.begin(),regions.end(),[&](const Region& r){return r.path==path && r.preset==binding.preset;}))
                 {regions.push_back({path,binding.preset,Edges(binding.preset)});changed=true;}
             }
-            if(changed)
-            {
-                for(auto& pair:nodes)
-                {
-                    auto& node=pair.second;
-                    node.match=Classify(node.path,regions);
-                    if(node.keyHint.isHint)node.match.presets|=KeyHintsMask;
-                }
-                for(auto& pair:records)
-                {
-                    auto& r=pair.second;if(r.layoutRoot)continue;auto match=Classify(r.path,regions);
-                    match.presets|=r.match.presets&KeyHintsMask;
-                    if(match.presets!=r.match.presets || match.edges!=r.match.edges || match.unit!=r.match.unit)added.insert(r.id);
-                    r.match=std::move(match);
-                }
-            }
+            if(changed)ReclassifyCachedRegions();
         }
         bool Covered(const std::string& path)
         {return std::any_of(covered.begin(),covered.end(),[&](const std::string& parent){return Within(path,parent);});}
@@ -502,9 +522,13 @@ namespace HUD
             for(const auto& event:events)if(event.preset!=UI::PresetCount && Resolve(event.id)==event.token)
                 RegisterTypedRegion(event.token,event.preset,event.type);
         }
-        void DiscoverVisuals(const std::vector<VisualEvent>& events)
+        QuestProbeResult& QuestProbeCache(int object)
         {
-            if(events.empty())return;
+            return checkedQuestProbes[static_cast<unsigned>(object)%checkedQuestProbes.size()];
+        }
+        bool PruneVisualCache()
+        {
+            const auto oldRecords=records.size(),oldRegions=regions.size();
             for(auto it=records.begin();it!=records.end();)
                 if(Resolve(it->first)!=it->second.token)it=records.erase(it);else ++it;
             for(auto it=nodes.begin();it!=nodes.end();)
@@ -517,13 +541,26 @@ namespace HUD
             regions.erase(std::remove_if(regions.begin(),regions.end(),[](const Region& r){
                 return (r.source && Resolve(r.source)!=r.sourceToken) || (r.transform && Resolve(r.object)!=r.token);
             }),regions.end());
+            if(regions.size()!=oldRegions)ReclassifyCachedRegions();
+            return records.size()!=oldRecords || regions.size()!=oldRegions;
+        }
+        bool DiscoverVisuals(const std::vector<VisualEvent>& events)
+        {
+            const bool probeQuest=settings->scale!=1 || (effectiveMask&QuestTrackingMask);
+            if(events.empty() && (!probeQuest || pendingQuestProbes.empty()))return false;
+            const bool pruned=!events.empty() && PruneVisualCache();
             struct Request {std::string path;int transform;bool subtree;};
             std::vector<Request> requests;
             std::unordered_map<int,std::string> eventPaths;
             std::unordered_set<int> outside;
+            std::unordered_set<int> scopedQuestRoots;
+            bool scopedQuestTouched=false;
             eventPaths.emplace(rootTransformId,"");
             for(const auto& scope:regions)if(scope.transform && Resolve(scope.object)==scope.token)
+            {
                 eventPaths.emplace(scope.transform,scope.path);
+                if(settings->scale!=1 && scope.preset==UI::QuestTracking)scopedQuestRoots.insert(scope.transform);
+            }
             auto eventPath=[&](auto&& self,int transform,unsigned depth)->bool {
                 if(eventPaths.count(transform))return true;
                 if(!transform || depth>=48 || outside.count(transform))return false;
@@ -537,15 +574,35 @@ namespace HUD
                 for(unsigned depth=0;descendant && depth<48;++depth)
                 {if(descendant==ancestor)return true;descendant=Parent(descendant);}return false;
             };
+            std::unordered_map<int,bool> questPrefabScopes;
+            auto inQuestPrefabScope=[&](auto&& self,int transform,unsigned depth)->bool {
+                if(!transform || depth>=48)return false;
+                if(const auto cached=questPrefabScopes.find(transform);cached!=questPrefabScopes.end())return cached->second;
+                // Reject map descendants before asking for their names or component types.
+                auto* object=self(self,Parent(transform),depth+1)?Resolve(transform):nullptr;
+                const bool allowed=object && Name(object)!="InLevelMapPage";
+                questPrefabScopes.emplace(transform,allowed);
+                return allowed;
+            };
+            auto questProbeAllowed=[&](int transform){
+                if(questPrefabScopes.empty())
+                {
+                    questPrefabScopes.emplace(rootTransformId,true);
+                    if(auto* canvas=Find("/Canvas"))questPrefabScopes.emplace(Id(api.transform(canvas,nullptr)),true);
+                }
+                return inQuestPrefabScope(inQuestPrefabScope,transform,0);
+            };
             for(const auto& event:events)
             {
                 auto* component=Resolve(event.id);if(!component || component!=event.token)continue;
                 auto* object=event.gameObject?component:api.owner(component,nullptr);
                 auto* transform=object?api.transform(object,nullptr):nullptr;if(!transform)continue;
                 const int transformId=Id(transform),objectId=Id(object);
+                if(scopedQuestRoots.count(transformId))scopedQuestTouched=true;
                 if(const auto cached=nodes.find(transformId);cached!=nodes.end() && cached->second.object==objectId)
                 {
                     const auto& node=cached->second;
+                    if(!node.chain.empty() && scopedQuestRoots.count(node.chain.back().second))scopedQuestTouched=true;
                     const bool sameChain=std::all_of(node.chain.begin(),node.chain.end(),[](const auto& edge){return Resolve(edge.first) && Parent(edge.first)==edge.second;});
                     if(sameChain && !event.subtree && node.graphic==event.id && node.graphicToken==component)continue;
                     if(sameChain && event.subtree && !event.gameObject && node.children>=0 && static_cast<size_t>(node.children)==node.childIds.size() &&
@@ -556,16 +613,22 @@ namespace HUD
                         if(sameChildren)continue;
                     }
                 }
-                // A new prefab root may itself be a typed HUD hint. Check only
-                // this root, never every Graphic or its chain of ancestors.
-                if(event.subtree && event.preset==UI::PresetCount && (effectiveMask&(uint32_t{1}<<UI::QuestTracking)))
-                    for(const char* type:QuestHintTypes)if(auto* hint=Component(object,type))
+                // Generic prefab and effect notifications share an instance cache.
+                if(probeQuest && event.subtree && event.preset==UI::PresetCount && objectId && transformId)
+                {
+                    const auto& checked=QuestProbeCache(objectId);
+                    const bool known=checked.probe.object==objectId && checked.probe.transform==transformId && checked.probe.token==object &&
+                        (!checked.source || Resolve(checked.source)==checked.sourceToken);
+                    if(!known && questProbeAllowed(Parent(transformId)))
                     {
-                        if(RegisterTypedRegion(hint,UI::QuestTracking,type))
-                            for(const auto& scope:regions)if(scope.transform==transformId)
-                            {eventPaths[transformId]=scope.path;outside.erase(transformId);break;}
-                        break;
+                        auto [entry,inserted]=queuedQuestProbes.try_emplace(objectId,object);
+                        if(inserted || entry->second!=object)
+                        {
+                            entry->second=object;
+                            pendingQuestProbes.push_back({objectId,transformId,object});
+                        }
                     }
+                }
                 if(!eventPath(eventPath,transformId,0))continue;
                 const auto& path=eventPaths.at(transformId);
                 if(Forbidden(path) || !Classify(path,regions).presets)continue;
@@ -576,10 +639,39 @@ namespace HUD
                 if(event.subtree)requests.erase(std::remove_if(requests.begin(),requests.end(),[&](const Request& r){return contains(transformId,r.transform);}),requests.end());
                 requests.push_back({path,transformId,event.subtree});
             }
+            // The typed lifecycle events register immediately. Only the fallback
+            // for unknown prefab roots shares this work across render passes.
+            for(size_t i=0;probeQuest && i<QuestProbeBudget && !pendingQuestProbes.empty();++i)
+            {
+                const auto probe=pendingQuestProbes.front();pendingQuestProbes.pop_front();
+                const auto queued=queuedQuestProbes.find(probe.object);
+                if(queued==queuedQuestProbes.end() || queued->second!=probe.token)continue;
+                queuedQuestProbes.erase(queued);
+                auto* object=Resolve(probe.object);auto* transform=Resolve(probe.transform);
+                if(object!=probe.token || !transform || api.owner(transform,nullptr)!=object || !questProbeAllowed(probe.transform))continue;
+                QuestProbeResult result{probe};
+                bool checked=true;
+                for(const char* type:QuestHintTypes)if(auto* hint=Component(object,type))
+                {
+                    checked=RegisterTypedRegion(hint,UI::QuestTracking,type);
+                    if(checked)
+                    {
+                        const int source=Id(hint);
+                        const auto region=std::find_if(regions.begin(),regions.end(),[&](const Region& candidate){
+                            return candidate.preset==UI::QuestTracking && candidate.source==source && candidate.sourceToken==hint;
+                        });
+                        result.source=source;result.sourceToken=hint;
+                        if(region!=regions.end())requests.push_back({region->path,probe.transform,true});
+                    }
+                    break;
+                }
+                if(checked)QuestProbeCache(probe.object)=result;
+            }
             // Known nodes are reused. A new Graphic caches just its own node;
             // explicit prefab/effect/row events may fill a changed small subtree.
             for(const auto& request:requests)
                 DiscoverRegion({request.path,UI::AllMainUi},true,request.subtree,Resolve(request.transform));
+            return pruned || scopedQuestTouched || !requests.empty();
         }
         std::string MarginPath(const Region& region)
         {
@@ -588,27 +680,75 @@ namespace HUD
                 if(Within(region.path,path))return path;
             return region.path;
         }
-        Record* CacheLayoutRoot(const std::string& path,const Match& match,bool margin,bool scale)
+        bool SetLayoutChain(Record& r)
+        {
+            r.chain.clear();
+            int current=r.transform;
+            for(unsigned depth=0;current && current!=r.anchorTransform && depth<48;++depth)
+            {
+                const int parent=Parent(current);
+                if(r.layoutSource && parent==rootTransformId)return false;
+                r.chain.push_back({current,parent});current=parent;
+            }
+            return current==r.anchorTransform;
+        }
+        Record* CacheLayoutRoot(const std::string& path,const Match& match,bool margin,bool scale,const Region* scope=nullptr)
         {
             if(Forbidden(path) || path=="GrpMainPage")return nullptr;
             if(const auto cached=layoutPaths.find(path);cached!=layoutPaths.end())
             {
-                auto& r=records.at(cached->second);r.match.presets|=match.presets;r.match.edges|=match.edges;
+                auto& r=records.at(cached->second);
+                if(scope)
+                {
+                    if(Resolve(r.id)!=r.token || Resolve(scope->object)!=scope->token)return nullptr;
+                    if(!Identity(r))
+                    {
+                        RestoreLayout(r);
+                        if(!SetLayoutChain(r))return nullptr;
+                        added.insert(r.id);
+                    }
+                    r.layoutSource=scope->source;r.layoutSourceToken=scope->sourceToken;
+                }
+                r.match.presets|=match.presets;r.match.edges|=match.edges;
                 r.match.topRight=r.match.topRight || match.topRight;r.marginRoot=r.marginRoot || margin;r.scaleRoot=r.scaleRoot || scale;return &r;
             }
-            auto* transform=Relative(Resolve(rootTransformId),path);if(!transform)return nullptr;
+            auto* transform=scope?Resolve(scope->transform):Relative(Resolve(rootTransformId),path);if(!transform)return nullptr;
             const int id=Id(transform);if(records.count(id))return nullptr;
-            auto* object=api.owner(transform,nullptr);if(!object || !Component(object,"RectTransform"))return nullptr;
+            auto* object=api.owner(transform,nullptr);if(!object)return nullptr;
+            const bool rect=Component(object,"RectTransform")!=nullptr;
+            if(!rect && !scope)return nullptr;
             Record r;r.id=id;r.object=Id(object);r.transform=id;r.token=transform;r.path=path;r.kind="HUDLayout";
-            r.anchor=rootId;r.anchorTransform=rootTransformId;r.layoutOnly=r.layoutRoot=r.rect=r.rectKnown=true;
+            r.anchor=rootId;r.anchorTransform=rootTransformId;r.layoutOnly=r.layoutRoot=r.rectKnown=true;r.rect=rect;
             r.marginRoot=margin;r.scaleRoot=scale;r.match=match;r.match.unit=path;
-            int current=id;
-            for(unsigned depth=0;current && current!=rootTransformId && depth<48;++depth)
-            {const int parent=Parent(current);r.chain.push_back({current,parent});current=parent;}
-            if(current!=rootTransformId)return nullptr;
+            if(scope)
+            {
+                r.anchor=r.anchorTransform=scope->canvasTransform;
+                r.layoutSource=scope->source;r.layoutSourceToken=scope->sourceToken;
+            }
+            if(!SetLayoutChain(r))return nullptr;
             r.smoothMaskToken=Component(object,"SmoothMask");r.smoothMask=Id(r.smoothMaskToken);
             r.rectMaskToken=Component(object,"RectMask2D");r.rectMask=Id(r.rectMaskToken);
             auto inserted=records.emplace(id,std::move(r));added.insert(id);layoutIds.push_back(id);layoutPaths.emplace(path,id);return &inserted.first->second;
+        }
+        void EnsureScopedQuestLayouts()
+        {
+            std::unordered_map<int,const Region*> scopes;
+            for(const auto& region:regions)
+                if(region.preset==UI::QuestTracking && region.canvasTransform &&
+                    Resolve(region.source)==region.sourceToken && Resolve(region.object)==region.token)
+                    scopes.try_emplace(region.transform,&region);
+
+            for(const auto& [transform,scope]:scopes)
+            {
+                // Follow live ancestry: generated scope paths do not encode nesting.
+                int parent=Parent(transform);
+                unsigned depth=0;
+                for(;parent && parent!=scope->canvasTransform && parent!=rootTransformId && !scopes.count(parent) && depth<48;++depth)
+                    parent=Parent(parent);
+                if(parent!=scope->canvasTransform)continue;
+                Match match;match.presets=QuestTrackingMask;
+                CacheLayoutRoot(scope->path,match,false,true,scope);
+            }
         }
         void EnsureLayoutRoots()
         {
@@ -624,7 +764,10 @@ namespace HUD
             for(const auto& pair:records)
             {
                 const auto& r=pair.second;if(r.layoutOnly || !r.scopePath.empty() || !LayoutNeeded(r.match) || r.match.unit.empty())continue;
-                const auto unit=Within(r.match.unit,"GrpMainPage/ChatArea/Chat/Content")?std::string("GrpMainPage/ChatArea/Chat/Content"):r.match.unit;
+                auto unit=Within(r.match.unit,"GrpMainPage/ChatArea/Chat/Content")?std::string("GrpMainPage/ChatArea/Chat/Content"):r.match.unit;
+                if(settings->scale!=1 && (r.match.presets&QuestTrackingMask))
+                    for(const auto& region:regions)
+                        if(region.preset==UI::QuestTracking && !region.transform && Within(unit,region.path))unit=region.path;
                 auto& match=requests[unit];match.presets|=r.match.presets;match.edges|=r.match.edges;match.topRight=match.topRight || r.match.topRight;
             }
             // Units containing other independent units are grouping containers.
@@ -634,6 +777,7 @@ namespace HUD
                 const bool leaf=std::none_of(requests.begin(),requests.end(),[&](const auto& other){return other.first!=request.first && Within(other.first,request.first);});
                 if(leaf || (request.second.topRight && settings->alignRightButtons))CacheLayoutRoot(request.first,request.second,false,leaf);
             }
+            if(settings->scale!=1)EnsureScopedQuestLayouts();
         }
         void SelectLayoutTargets()
         {
@@ -679,7 +823,7 @@ namespace HUD
             std::unordered_map<std::string,Unit> result;
             for(const auto& pair:records)
             {
-                const auto& r=pair.second;if(!r.layoutTarget || !layoutDirty.count(r.id))continue;
+                const auto& r=pair.second;if(!r.layoutTarget || r.layoutSource || !layoutDirty.count(r.id))continue;
                 auto& unit=result[r.match.unit];unit.topRight=r.match.topRight;if(unit.transform)continue;
                 auto it=unitBindings.find(r.match.unit);
                 if(it==unitBindings.end())
@@ -715,22 +859,25 @@ namespace HUD
             {
                 auto& r=pair.second;if(!layoutDirty.count(r.id) || !r.layoutTarget || !Identity(r))continue;auto* transform=Resolve(r.transform);
                 if(!r.layoutRoot && !Active(r.transform))continue;
-                const int parent=Parent(r.transform);const auto parentMatrix=MatrixOf(parent);if(invalidMatrices.count(parent))continue;
-                const auto unit=units.find(r.match.unit);if(unit==units.end() || !unit->second.transform)continue;
-                V2 shift{unit->second.alignment,0};
-                if(horizontal && r.marginRoot)
+                V2 shift{},delta{};
+                if(!r.layoutSource)
                 {
-                    if(r.match.edges&Left)shift.x+=settings->marginLeft;
-                    if(r.match.edges&Right)shift.x-=settings->marginRight;
+                    const int parent=Parent(r.transform);const auto parentMatrix=MatrixOf(parent);if(invalidMatrices.count(parent))continue;
+                    const auto unit=units.find(r.match.unit);if(unit==units.end() || !unit->second.transform)continue;
+                    shift.x=unit->second.alignment;
+                    if(horizontal && r.marginRoot)
+                    {
+                        if(r.match.edges&Left)shift.x+=settings->marginLeft;
+                        if(r.match.edges&Right)shift.x-=settings->marginRight;
+                    }
+                    if(vertical && r.marginRoot){if(r.match.edges&Top)shift.y-=settings->marginTop;if(r.match.edges&Bottom)shift.y+=settings->marginBottom;}
+                    if(!InverseVector(parentMatrix,shift,delta) || !Identity(r,true))continue;
                 }
-                if(vertical && r.marginRoot){if(r.match.edges&Top)shift.y-=settings->marginTop;if(r.match.edges&Bottom)shift.y+=settings->marginBottom;}
                 r.canvasShift=shift;r.factor=r.applyScale?settings->scale:1.f;
-                const V3 desiredScale{r.layout.scale.x*r.factor,r.layout.scale.y*r.factor,r.layout.scale.z};V2 delta{};
+                const V3 desiredScale{r.layout.scale.x*r.factor,r.layout.scale.y*r.factor,r.layout.scale.z};
                 // Scale at the native pivot. Large layout rectangles and empty
                 // placeholder slots must not introduce a centering translation.
-                if(!InverseVector(parentMatrix,shift,delta))continue;
                 const auto desiredPosition=Add(r.layout.position,delta);
-                if(!Identity(r,true))continue;
                 V3 currentScale{};api.scale(transform,&currentScale,nullptr);
                 if(!Same(currentScale,desiredScale)){api.setScale(transform,&desiredScale,nullptr);r.layout.changed=true;changedLayouts.insert(r.transform);}
                 if(!Same(r.currentPosition,desiredPosition))
@@ -807,13 +954,22 @@ namespace HUD
             {
                 const auto it=records.find(id);if(it==records.end())continue;
                 auto& r=it->second;if(!r.layoutTarget || (!r.applyScale && Same(r.canvasShift,V2{})))continue;
+                if(r.layoutSource && (!Identity(r) || Resolve(r.layoutSource)!=r.layoutSourceToken))
+                {RestoreLayout(r);scopedLayoutsChanged=true;continue;}
                 auto* transform=api.resolve(r.transform,nullptr);if(!transform || transform!=r.token)continue;
                 if(r.chain.empty() || api.parent(transform,nullptr)!=api.resolve(r.chain.front().second,nullptr))continue;
-                V2 current{};api.position(transform,&current,nullptr);V3 scale=r.layout.applied?r.layout.appliedScale:r.layout.scale;
+                V2 current{};V3 local{};
+                if(r.rect)api.position(transform,&current,nullptr);
+                else {api.local(transform,&local,nullptr);current={local.x,local.y};}
+                V3 scale=r.layout.applied?r.layout.appliedScale:r.layout.scale;
                 if(r.applyScale)api.scale(transform,&scale,nullptr);
                 Observe(r.layout,scale,current);
-                Matrix parent{};V2 translation{};
-                if(!ParentLinear(r,linears,parent) || !InverseVector(parent,r.canvasShift,translation))continue;
+                V2 translation{};
+                if(!r.layoutSource)
+                {
+                    Matrix parent{};
+                    if(!ParentLinear(r,linears,parent) || !InverseVector(parent,r.canvasShift,translation))continue;
+                }
                 V3 desiredScale=scale;
                 if(r.applyScale)
                 {
@@ -821,7 +977,12 @@ namespace HUD
                 }
                 const auto desired=Add(r.layout.position,translation);
                 if(r.applyScale && !Same(scale,desiredScale)){api.setScale(transform,&desiredScale,nullptr);r.layout.changed=true;changedLayouts.insert(r.transform);}
-                if(!Same(current,desired)){api.setPosition(transform,&desired,nullptr);r.layout.changed=true;changedLayouts.insert(r.transform);}
+                if(!Same(current,desired))
+                {
+                    if(r.rect)api.setPosition(transform,&desired,nullptr);
+                    else {local.x=desired.x;local.y=desired.y;api.setLocal(transform,&local,nullptr);}
+                    r.layout.changed=true;changedLayouts.insert(r.transform);
+                }
                 r.layout.appliedPosition=desired;if(r.applyScale)r.layout.appliedScale=desiredScale;r.layout.applied=true;
             }
             RefreshMasks();
@@ -900,23 +1061,33 @@ namespace HUD
             if(command&1)restoreToggled=!restoreToggled;
             const bool nextRestored=restoreToggled || holdRestoreDown.load(std::memory_order_acquire);
             const bool restoreChanged=nextRestored!=restored;
-            if(next==settings && !captured && !command && !restoreChanged && events.empty())return;
+            const bool scopedLayoutChange=std::exchange(scopedLayoutsChanged,false);
+            const bool questWork=!pendingQuestProbes.empty() && (next->scale!=1 || next->hiddenPresets[UI::QuestTracking] || next->hiddenPresets[UI::AllMainUi]);
+            if(next==settings && !captured && !command && !restoreChanged && !scopedLayoutChange && !questWork && events.empty())return;
             restored=nextRestored;
             const auto previous=settings;settings=next;
-            if(previous && SameUi(*previous,*settings) && !captured && !command && !restoreChanged && events.empty())return;
+            const bool uiChanged=!previous || !SameUi(*previous,*settings);
+            if(!uiChanged && !captured && !command && !restoreChanged && !scopedLayoutChange && !questWork && events.empty())return;
             ClearFrame();visibilityDirty.clear();layoutDirty.clear();added.clear();
             bool force=!previous || captured!=0 || restoreChanged;
-            effectiveMask=HiddenMask(*settings);
-            watchVisuals.store(Demand(),std::memory_order_release);
+            if(uiChanged)
+            {
+                effectiveMask=HiddenMask(*settings);
+                watchVisuals.store(Demand(),std::memory_order_release);
+            }
             bool replaced=false;
             if(captured && !DiscoverRoot(captured,replaced))return;
             if(!Demand() && events.empty() && !(command&2)){RestoreAll();return;}
             if(!captured && !DiscoverRoot(0,replaced))return;force=force || replaced;
+            const auto regionCount=regions.size();
             RegisterVisualSources(events);
             if(!Demand() && !(command&2)){RestoreAll();return;}
             if(command&2){LoadRegions(true);MaintainLayouts();Export();ResetCache();LoadRegions(true);force=true;}
             if(faulted.load()){RestoreAll();return;}
-            EnsureRegions();DiscoverVisuals(events);EnsureLayoutRoots();
+            if(force || uiChanged || scopedLayoutChange || !events.empty())EnsureRegions();
+            const bool visualsChanged=DiscoverVisuals(events);
+            if(!force && !uiChanged && !scopedLayoutChange && !visualsChanged && added.empty() && regionCount==regions.size())return;
+            EnsureLayoutRoots();
             if(restored){RestoreAll();return;}
             const UI::Settings defaults;const auto& old=previous?*previous:defaults;
             const auto hideChanged=HiddenMask(old)^effectiveMask;
@@ -930,8 +1101,10 @@ namespace HUD
                 const auto& r=pair.second;const bool pathDirty=pathsChanged && (PathsTouch(r,old) || PathsTouch(r,*settings));
                 const bool visibility=force || added.count(r.id) || (r.match.presets&hideChanged) || pathDirty;
                 if(visibility){visibilityDirty.insert(r.id);if(r.match.topRight)topVisibility=true;}
-                if((force || added.count(r.id) || scaleChanged || (r.match.edges&edges) || (r.match.topRight && alignChanged)) &&
-                    (LayoutNeeded(r) || r.layout.changed))layoutDirty.insert(r.id);
+                const bool layoutNeeded=LayoutNeeded(r);
+                const bool layoutTargetChanged=r.layoutTarget!=layoutNeeded || r.applyScale!=(r.scaleRoot && settings->scale!=1);
+                if(layoutTargetChanged || ((force || added.count(r.id) || scaleChanged || (r.match.edges&edges) || (r.match.topRight && alignChanged)) &&
+                    (layoutNeeded || r.layout.changed)))layoutDirty.insert(r.id);
             }
             if(topVisibility && (old.alignRightButtons || settings->alignRightButtons))
                 for(const auto& pair:records)if(pair.second.match.topRight)layoutDirty.insert(pair.first);
@@ -963,7 +1136,7 @@ namespace HUD
             try{Guard([&]{
                 const int id=Id(component);if(!id)return;
                 std::lock_guard<std::mutex> lock(visualMutex);
-                if(visualEvents.size()>=2048)return;
+                if(visualEvents.size()>=VisualEventLimit)return;
                 visualEvents.push_back({id,component,preset,type,subtree,gameObject});haveVisualEvents.store(true,std::memory_order_release);queued=true;
             });}catch(...){}
             return queued;
